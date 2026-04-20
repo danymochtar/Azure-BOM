@@ -31,6 +31,7 @@ def build_compute_bom(
     os_override: str = "as-detected",
     app_name: str = "",
     pricing_mode: str = "payg",
+    use_ahb: bool = False,
 ) -> Tuple[List[BomLine], List[dict]]:
     """Return (bom lines, mapping_rows) where mapping_rows is a per-VM record
     showing source specs -> target Azure SKUs for UI display.
@@ -81,12 +82,20 @@ def build_compute_bom(
             vm_custom = f"{names[0]}+{len(names)-1}-more"
         if app_name:
             vm_custom = f"{app_name}-{vm_custom}"
-        price = client.vm_price(arm_name, region, os_is_windows=win, pricing_mode=pricing_mode)
-        tag = _BILLING_TAG.get(pricing_mode, "")
+        price = client.vm_price(
+            arm_name, region, os_is_windows=win,
+            pricing_mode=pricing_mode, use_ahb=use_ahb,
+        )
+        # License tag — included in every compute row so the BOM makes the
+        # licensing basis explicit (Azure cost standard).
+        ahb_tag = " [AHB]" if (use_ahb and win) else ""
+        term_tag = _BILLING_TAG.get(pricing_mode, "")
+        license_tag = f"{term_tag}{ahb_tag}"
+        os_label = "Windows" + (" / AHB BYOL" if use_ahb and win else "") if win else "Linux"
         if not price:
             lines.append(BomLine(
                 category="Compute",
-                resource=f"Virtual Machine - {sku.display}{tag}",
+                resource=f"Virtual Machine - {sku.display} ({os_label}){license_tag}",
                 sku=arm_name,
                 meter="(price not found)",
                 region=region,
@@ -102,7 +111,7 @@ def build_compute_bom(
         qty_hours = grp["count"] * HOURS_PER_MONTH
         lines.append(BomLine(
             category="Compute",
-            resource=f"Virtual Machine - {sku.display} {'(Windows)' if win else '(Linux)'} x{grp['count']}{tag}",
+            resource=f"Virtual Machine - {sku.display} ({os_label}) x{grp['count']}{license_tag}",
             sku=arm_name,
             meter=price.meter_name,
             region=region,

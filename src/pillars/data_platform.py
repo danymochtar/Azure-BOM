@@ -162,9 +162,24 @@ def _synapse_line(client: RetailPricesClient, region: str, dwu: int, app_name: s
     )
 
 
+# Azure Hybrid Benefit discount on Azure SQL DB compute by tier. Retail feed
+# doesn't expose a dedicated "compute-only" meter for SQL DB — AHB is applied
+# at billing. We approximate with industry-standard discount percentages:
+#   GP: SQL license is ~55% of the total vCore cost
+#   BC: SQL license is ~33% of the total
+#   HS: SQL license is ~25% of the total
+# When AHB is on, subtract that license fraction from the vCore line.
+_SQL_DB_AHB_DISCOUNT: Dict[str, float] = {
+    "gp": 0.55,
+    "bc": 0.33,
+    "hs": 0.25,
+}
+
+
 def _azure_sql_db_lines(
     client: RetailPricesClient, region: str,
     tier_key: str, vcores: int, storage_gb: int, zone_redundant: bool, app_name: str,
+    use_ahb_sql: bool = False,
 ) -> List[BomLine]:
     if tier_key == "none" or vcores <= 0:
         return []
@@ -186,13 +201,17 @@ def _azure_sql_db_lines(
     out: List[BomLine] = []
     if compute:
         qty = vcores * HOURS_PER_MONTH
+        discount = _SQL_DB_AHB_DISCOUNT.get(tier_key, 0.0) if use_ahb_sql else 0.0
+        effective_rate = compute.retail_price * (1.0 - discount)
+        ahb_tag = f" [AHB -{int(discount*100)}%]" if use_ahb_sql else ""
+        zr_tag = " [ZR]" if zone_redundant else ""
         out.append(BomLine(
             category="Data + Analytics",
-            resource=f"Azure SQL Database {cfg_label} × {vcores} vCores" + (" [ZR]" if zone_redundant else ""),
+            resource=f"Azure SQL Database {cfg_label} × {vcores} vCores{zr_tag}{ahb_tag}",
             sku=compute.sku_name or compute.product_name, meter=compute.meter_name,
             region=region, quantity=qty, unit="vCore-hours",
-            unit_price=compute.retail_price,
-            monthly_cost=round(compute.retail_price * qty, 2),
+            unit_price=effective_rate,
+            monthly_cost=round(effective_rate * qty, 2),
             currency=compute.currency_code,
             source="retail-prices",
             product_id=compute.product_id, sku_id=compute.sku_id, meter_id=compute.meter_id,
@@ -743,6 +762,7 @@ def build_bom(client, region: str, inputs: dict, app_name: str, pricing_mode: st
         storage_gb=sql.get("storage_gb", 0),
         zone_redundant=sql.get("zone_redundant", False),
         app_name=app_name,
+        use_ahb_sql=bool(inputs.get("__use_ahb_sql__", False)),
     ))
 
     adls = inputs.get("adls_gen2", {})

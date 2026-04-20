@@ -102,12 +102,15 @@ def _app_service_line(
 def _aks_node_lines(
     client: RetailPricesClient, region: str,
     pool_name: str, node_sku: str, node_count: int, os_is_windows: bool,
-    uptime_sla: bool, pricing_mode: str, app_name: str,
+    uptime_sla: bool, pricing_mode: str, app_name: str, use_ahb: bool = False,
 ) -> List[BomLine]:
     if node_sku == "none" or node_count <= 0:
         return []
-    # Node VMs priced via vm_price (honors RI/SP)
-    price = client.vm_price(node_sku, region, os_is_windows=os_is_windows, pricing_mode=pricing_mode)
+    # Node VMs priced via vm_price (honors RI/SP + AHB)
+    price = client.vm_price(
+        node_sku, region, os_is_windows=os_is_windows,
+        pricing_mode=pricing_mode, use_ahb=use_ahb,
+    )
     out: List[BomLine] = []
     qty = node_count * HOURS_PER_MONTH
     pool_label = pool_name or "default"
@@ -459,6 +462,7 @@ def build_bom(client, region: str, inputs: dict, app_name: str, pricing_mode: st
         os_is_windows=aks.get("os_windows", False),
         uptime_sla=aks.get("uptime_sla", False),
         pricing_mode=pricing_mode, app_name=app_name,
+        use_ahb=bool(inputs.get("__use_ahb__", False)),
     ))
 
     acr = inputs.get("acr", {})

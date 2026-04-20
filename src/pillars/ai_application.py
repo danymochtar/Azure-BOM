@@ -328,11 +328,14 @@ def _ai_search_line(
 def _gpu_vm_lines(
     client: RetailPricesClient, region: str,
     arm_sku: str, count: int, hours: float, os_is_windows: bool,
-    pricing_mode: str, app_name: str,
+    pricing_mode: str, app_name: str, use_ahb: bool = False,
 ) -> List[BomLine]:
     if count <= 0 or hours <= 0:
         return []
-    price = client.vm_price(arm_sku, region, os_is_windows=os_is_windows, pricing_mode=pricing_mode)
+    price = client.vm_price(
+        arm_sku, region, os_is_windows=os_is_windows,
+        pricing_mode=pricing_mode, use_ahb=use_ahb,
+    )
     qty = count * hours
     if not price:
         return [BomLine(
@@ -581,6 +584,7 @@ def build_bom(client, region: str, inputs: dict, app_name: str, pricing_mode: st
             client, region, arm_sku=gpu["sku"], count=gpu["count"], hours=gpu["hours"],
             os_is_windows=gpu.get("os_windows", False),
             pricing_mode=pricing_mode, app_name=app_name,
+            use_ahb=bool(inputs.get("__use_ahb__", False)),
         ))
 
     ft = inputs.get("finetune", {})

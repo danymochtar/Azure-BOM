@@ -176,6 +176,7 @@ class RetailPricesClient:
         region: str,
         os_is_windows: bool,
         pricing_mode: str = "payg",
+        use_ahb: bool = False,
     ) -> Optional[PriceRecord]:
         """Price per hour for a VM SKU under the chosen billing term.
 
@@ -187,15 +188,30 @@ class RetailPricesClient:
         Falls back transparently to PAYG when the requested term isn't
         available for this SKU in the region. Fallbacks are recorded in
         `self.term_fallbacks` so the UI can surface them.
+
+        Azure Hybrid Benefit (AHB): when `use_ahb=True` AND the OS is
+        Windows, the lookup queries the Linux price for the SAME ARM SKU
+        (which is what Microsoft bills under AHB — you supply your own
+        Windows Server license with SA). The returned record's meter_name
+        is tagged ' (AHB Windows)' so callers can surface it in the BOM.
         """
         term_cfg = BILLING_TERMS.get(pricing_mode, BILLING_TERMS["payg"])
 
+        # With AHB, price the Windows VM as Linux (customer brings the
+        # Windows license) but keep the OS label in the returned record.
+        effective_windows_for_lookup = os_is_windows and not use_ahb
+
         # Always fetch the Consumption record — we need it for PAYG and for
         # Savings Plan (SP entries live inside the Consumption record).
-        payg = self._vm_payg(arm_sku_name, region, os_is_windows)
+        payg = self._vm_payg(arm_sku_name, region, effective_windows_for_lookup)
+
+        def _tag_ahb(rec: Optional[PriceRecord]) -> Optional[PriceRecord]:
+            if rec is None or not (use_ahb and os_is_windows):
+                return rec
+            return dataclasses.replace(rec, meter_name=f"{rec.meter_name} (AHB Windows)")
 
         if pricing_mode == "payg" or pricing_mode is None:
-            return payg
+            return _tag_ahb(payg)
 
         # Savings Plan: look inside the Consumption record's savingsPlan array.
         sp_term = term_cfg.get("sp_term")
@@ -205,16 +221,17 @@ class RetailPricesClient:
             for sp in payg.savings_plan:
                 if sp.term == sp_term:
                     tagged_meter = f"{payg.meter_name} (SP {sp_term})"
-                    return dataclasses.replace(
+                    sp_rec = dataclasses.replace(
                         payg,
                         retail_price=sp.retail_price,
                         unit_price=sp.unit_price,
                         meter_name=tagged_meter,
                         price_type="SavingsPlan",
                     )
+                    return _tag_ahb(sp_rec)
             # Not available → fall back to PAYG
             self.term_fallbacks.add((arm_sku_name, pricing_mode))
-            return payg
+            return _tag_ahb(payg)
 
         # Reserved Instance
         ri_term = term_cfg.get("ri_term")
@@ -230,28 +247,30 @@ class RetailPricesClient:
             def is_windows_rec(r: PriceRecord) -> bool:
                 return "windows" in r.product_name.lower()
 
+            # With AHB on a Windows VM, use the Linux RI record.
             candidates = [
                 r for r in records
                 if r.reservation_term == ri_term
-                and is_windows_rec(r) == os_is_windows
+                and is_windows_rec(r) == effective_windows_for_lookup
             ]
             if not candidates:
                 self.term_fallbacks.add((arm_sku_name, pricing_mode))
-                return payg
+                return _tag_ahb(payg)
             chosen = min(candidates, key=lambda r: r.retail_price)
             # RI retailPrice is the TOTAL prepaid for the term. Convert to a
             # per-hour equivalent so downstream math stays identical.
             hours_per_term = term_cfg["hours_per_term"]
             per_hour = chosen.retail_price / hours_per_term if hours_per_term else 0
-            return dataclasses.replace(
+            ri_rec = dataclasses.replace(
                 chosen,
                 retail_price=per_hour,
                 unit_price=per_hour,
                 meter_name=f"{chosen.meter_name} (RI {ri_term})",
                 price_type="Reservation",
             )
+            return _tag_ahb(ri_rec)
 
-        return payg
+        return _tag_ahb(payg)
 
     def _vm_payg(
         self, arm_sku_name: str, region: str, os_is_windows: bool

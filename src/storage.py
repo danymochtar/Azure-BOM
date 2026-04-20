@@ -89,6 +89,8 @@ DEFAULT_PREFS: dict = {
     "currency": "",
     "strategy_key": "iaas",
     "pricing_mode": "payg",
+    "use_ahb_windows": False,
+    "use_ahb_sql": False,
     "include_lz": True,
     "include_ha": False,
     "include_bcdr": False,

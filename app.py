@@ -126,6 +126,34 @@ with st.sidebar:
             "after Generate."
         ),
     )
+    st.caption(
+        "**Azure cost-optimization guidance:** \n"
+        "• **Steady-state 24/7** workloads → RI 3Y (50-60% savings).  \n"
+        "• **Always-on but product direction uncertain** → SP 1Y or RI 1Y (30-40% savings).  \n"
+        "• **Spiky / seasonal** workloads → Pay-as-you-go.  \n"
+        "• **Experimental / short-term** → Pay-as-you-go."
+    )
+
+    st.subheader("Azure Hybrid Benefit (BYOL with Software Assurance)")
+    use_ahb_windows = st.checkbox(
+        "Windows Server AHB (bring your own license)",
+        value=bool(_prefs.get("use_ahb_windows", False)),
+        help=(
+            "Applies to all Windows VMs + AKS Windows nodes + GPU VMs running Windows. "
+            "Swaps the Windows-VM price for the Linux-VM price of the same SKU "
+            "(~30-40% off a Windows VM). Requires existing Windows Server licenses "
+            "with active SA."
+        ),
+    )
+    use_ahb_sql = st.checkbox(
+        "SQL Server AHB for Azure SQL Database",
+        value=bool(_prefs.get("use_ahb_sql", False)),
+        help=(
+            "Applies a tier-based discount on Azure SQL DB compute: "
+            "~55% off General Purpose vCores, ~33% off Business Critical, "
+            "~25% off Hyperscale. Requires existing SQL Server licenses with SA."
+        ),
+    )
 
     st.subheader("AI key")
     _secrets_key = ""
@@ -375,6 +403,15 @@ if "infra_lift_shift" in pillar_inputs and "azure_security" in pillar_inputs:
     pillar_inputs["azure_security"].setdefault("vm_count", exports.get("vm_count", 0))
     pillar_inputs["azure_security"].setdefault("la_gb", exports.get("la_gb", 0.0))
 
+# AHB injection: flow the Windows / SQL hybrid-benefit flags to every pillar
+# that prices VM compute or Azure SQL DB. Lives under `__use_ahb__` /
+# `__use_ahb_sql__` to avoid colliding with user-facing pillar fields.
+for pk, pin in pillar_inputs.items():
+    if not isinstance(pin, dict):
+        continue
+    pin["__use_ahb__"] = bool(use_ahb_windows)
+    pin["__use_ahb_sql__"] = bool(use_ahb_sql)
+
 # ---------------- Stage C: generate BOM (fan-out across active pillars) ----------------
 st.subheader("4. Generate assessment")
 if st.button("Run Azure Cost Assessment", type="primary"):
@@ -436,6 +473,8 @@ if st.button("Run Azure Cost Assessment", type="primary"):
             "region": region,
             "currency": currency,
             "pricing_mode": pricing_mode,
+            "use_ahb_windows": use_ahb_windows,
+            "use_ahb_sql": use_ahb_sql,
             "active_pillars": active_pillars,
             "strategy_key": ls_in.get("strategy_key", "iaas"),
             "include_lz": ls_in.get("include_lz", True),

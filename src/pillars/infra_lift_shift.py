@@ -201,6 +201,7 @@ def build_bom(client, region: str, inputs: dict, app_name: str, pricing_mode: st
         disk_tier=inputs.get("disk_tier", "Premium SSD"),
         os_override=inputs.get("os_mode", "as-detected"),
         app_name=app_name, pricing_mode=pricing_mode,
+        use_ahb=bool(inputs.get("__use_ahb__", False)),
     )
 
     all_lines: List[BomLine] = []
