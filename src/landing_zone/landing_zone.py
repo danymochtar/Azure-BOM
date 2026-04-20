@@ -201,7 +201,7 @@ LANDING_ZONE_COMPONENTS: List[LzComponent] = [
     LzComponent(
         key="log_analytics",
         category="Management",
-        resource="Log Analytics (Pay-as-you-go, 50 GB/mo)",
+        resource="Log Analytics (PAYG ingestion)",
         default_enabled=True,
         quantity=50.0,
         unit="GB",
@@ -229,7 +229,7 @@ LANDING_ZONE_COMPONENTS: List[LzComponent] = [
     LzComponent(
         key="recovery_vault",
         category="Management",
-        resource="Recovery Services Vault / Azure Backup (50 GB protected)",
+        resource="Recovery Services Vault / Azure Backup",
         default_enabled=False,
         quantity=50.0,
         unit="GB",
@@ -274,10 +274,15 @@ def build_landing_zone_bom(
             )
             continue
         monthly = chosen.retail_price * qty
+        # Rewrite the resource label to reflect the ACTUAL quantity when the
+        # caller overrode the default (backup %, LA MB/day/VM, bandwidth GB).
+        resource_label = comp.resource
+        if comp.key in ("log_analytics", "recovery_vault", "bandwidth_egress"):
+            resource_label = f"{comp.resource} (~{qty:,.1f} {comp.unit}/mo)"
         lines.append(
             BomLine(
                 category=comp.category,
-                resource=comp.resource,
+                resource=resource_label,
                 sku=chosen.sku_name or chosen.product_name,
                 meter=chosen.meter_name,
                 region=region,

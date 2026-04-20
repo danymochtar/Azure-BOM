@@ -102,7 +102,7 @@ def classify(
     sheets = _read_file(data, filename)
     preview = _build_short_preview(sheets)
 
-    client = anthropic.Anthropic(api_key=api_key)
+    client = anthropic.Anthropic(api_key=api_key, max_retries=4)
     response = client.messages.parse(
         model=MODEL,
         max_tokens=2000,

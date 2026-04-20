@@ -26,11 +26,16 @@ from pydantic import BaseModel, Field
 from ..models import InventoryItem
 
 
-MODEL = "claude-opus-4-7"
+# Sonnet 4.6 is the sweet spot for structured inventory extraction: strong
+# reasoning, higher per-minute token limits than Opus on most tiers, and
+# ~40% of the input/output cost. Callers can override with `model=...`.
+MODEL = "claude-sonnet-4-6"
 
-# If the whole file is at or under this many rows, we send everything and let
-# Claude extract items directly. Otherwise we fall back to mapping + local apply.
-DIRECT_MODE_ROW_CAP = 500
+# Send at most this many rows per sheet into the direct-extract call. Keeps
+# a single upload well inside typical 30-50K tokens/min rate limits even if
+# the sheet is large. Larger files fall through to the mapping path which
+# only sends a 12-row sample.
+DIRECT_MODE_ROW_CAP = 200
 
 
 # ---------------------------------------------------------------------------
@@ -201,10 +206,12 @@ def ai_extract_direct(
     filename: str,
     api_key: str,
     strategy_hint: str = "",
+    model: str = MODEL,
 ) -> DirectExtraction:
     """Claude reads the whole file and produces a list of VMs."""
     preview = _build_preview(sheets, sample_rows=None)
-    client = anthropic.Anthropic(api_key=api_key)
+    # max_retries > default so transient 429s back off and retry automatically
+    client = anthropic.Anthropic(api_key=api_key, max_retries=4)
 
     user_content = (
         f"File: {filename}\n\n"
@@ -216,7 +223,7 @@ def ai_extract_direct(
     user_content += "Extract every server/VM and return the normalized list."
 
     response = client.messages.parse(
-        model=MODEL,
+        model=model,
         max_tokens=16000,
         system=[
             {"type": "text", "text": DIRECT_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
@@ -261,13 +268,14 @@ def ai_generate_mapping(
     data: bytes,
     filename: str,
     api_key: str,
+    model: str = MODEL,
 ) -> Tuple[InventoryMapping, dict[str, pd.DataFrame]]:
     sheets = _read_file(data, filename)
     preview = _build_preview(sheets, sample_rows=12)
-    client = anthropic.Anthropic(api_key=api_key)
+    client = anthropic.Anthropic(api_key=api_key, max_retries=4)
 
     response = client.messages.parse(
-        model=MODEL,
+        model=model,
         max_tokens=16000,
         system=[
             {"type": "text", "text": MAPPING_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}

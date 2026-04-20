@@ -257,27 +257,43 @@ if run_vm_flow:
         if not sec_pick.startswith("(none"):
             secondary_region = sec_pick
 
-    with st.spinner("Extracting inventory (Opus)…"):
-        try:
-            items, mode, spec = ai_parse_inventory(
-                upload_bytes,
-                upload_name,
-                anthropic_key,
-                include_powered_off=include_off,
-                strategy_hint=strategy_guidance(strategy_key, ha_enabled=include_ha),
-            )
-            st.success(f"Extracted {len(items)} VM(s) in `{mode}` mode.")
-            if mode == "direct" and getattr(spec, "summary", None):
-                st.caption(spec.summary)
-        except Exception as e:
-            st.warning(f"AI extraction failed ({type(e).__name__}: {e}). Falling back to heuristic parser.")
-            with st.expander("Traceback", expanded=False):
-                st.code(traceback.format_exc())
+    # Cache extraction by (file hash, strategy, HA flag, powered-off flag).
+    # Widget toggles that don't change these won't re-hit the API — critical
+    # for rate-limit headroom.
+    ext_key = (
+        f"ext::{hash(upload_bytes)}::{upload_name}::{strategy_key}::"
+        f"{include_ha}::{include_off}"
+    )
+    if ext_key in st.session_state:
+        items, mode, spec = st.session_state[ext_key]
+        st.success(f"Using cached extraction ({len(items)} VM(s), `{mode}` mode).")
+        if mode == "direct" and getattr(spec, "summary", None):
+            st.caption(spec.summary)
+    else:
+        with st.spinner("Extracting inventory (Sonnet)…"):
             try:
-                items, _ = parse_inventory(upload_bytes, upload_name, include_powered_off=include_off)
-            except Exception as e2:
-                st.error(f"Heuristic parser also failed: {e2}")
-                items = []
+                items, mode, spec = ai_parse_inventory(
+                    upload_bytes,
+                    upload_name,
+                    anthropic_key,
+                    include_powered_off=include_off,
+                    strategy_hint=strategy_guidance(strategy_key, ha_enabled=include_ha),
+                )
+                st.session_state[ext_key] = (items, mode, spec)
+                st.success(f"Extracted {len(items)} VM(s) in `{mode}` mode.")
+                if mode == "direct" and getattr(spec, "summary", None):
+                    st.caption(spec.summary)
+            except Exception as e:
+                st.warning(f"AI extraction failed ({type(e).__name__}: {e}). Falling back to heuristic parser.")
+                with st.expander("Traceback", expanded=False):
+                    st.code(traceback.format_exc())
+                try:
+                    items, _ = parse_inventory(upload_bytes, upload_name, include_powered_off=include_off)
+                    mode, spec = "heuristic", None
+                except Exception as e2:
+                    st.error(f"Heuristic parser also failed: {e2}")
+                    items = []
+                    mode, spec = "failed", None
 
     if items:
         inv_df = pd.DataFrame([{
