@@ -1,21 +1,22 @@
 """AI-powered inventory parser using Claude Opus 4.7.
 
-Given an arbitrary spreadsheet/CSV, Claude inspects the sheet names, column
-headers, and a row sample, and returns a mapping spec. We then apply that
-mapping locally to the full file — keeping token cost low even for huge files.
+Two modes:
 
-Uses:
-- `claude-opus-4-7` (latest, most capable for structured reasoning)
-- `adaptive` thinking (Opus 4.7 default) for robust column inference
-- `effort: "medium"` — enough reasoning for this task, tight output
-- Structured outputs via `messages.parse()` with a Pydantic schema
-- Prompt caching on the system prompt + instructions so subsequent uploads
-  within the 5-minute window only pay for the tail.
+- **Direct extraction** (small files, <=500 rows total): Claude reads the whole
+  file and produces a list of normalized VMs directly. Handles pivoted/key-value
+  layouts, free-text specs ("2 x Xeon Gold 6346 (16 Cores)",
+  "D:4 x 1.9TB SSD, RAID 10"), and arbitrary structures.
+
+- **Column mapping** (large files): Claude reads a sample, returns a mapping
+  spec, and we apply it locally to the full dataframe — keeping token cost
+  flat regardless of row count.
+
+Uses structured outputs via `messages.parse()` + Pydantic, and prompt caching
+on the system block so repeated uploads within 5 minutes are cheap.
 """
 from __future__ import annotations
 
 import io
-import json
 from typing import List, Optional, Tuple
 
 import anthropic
@@ -27,39 +28,37 @@ from ..models import InventoryItem
 
 MODEL = "claude-opus-4-7"
 
-SYSTEM_PROMPT = """You are an expert data engineer specializing in IT infrastructure inventory.
+# If the whole file is at or under this many rows, we send everything and let
+# Claude extract items directly. Otherwise we fall back to mapping + local apply.
+DIRECT_MODE_ROW_CAP = 500
 
-You will be given a preview of a spreadsheet (sheet names, column headers, and a
-handful of sample rows). Your job is to pick the sheet that contains the actual
-VM/server inventory and map its columns to a normalized schema so a downstream
-parser can process the full file.
 
-Normalized fields:
-- name: VM / server / host name (required)
-- vcpu: number of virtual CPUs (integer)
-- memory: RAM amount (the number itself — you also tell us the unit)
-- storage: provisioned storage (the number itself — you also tell us the unit)
-- os: operating system (e.g. "Windows Server 2019", "Red Hat 8", "Ubuntu 22.04")
-- powerstate: power state column if present (poweredOn / poweredOff / unknown)
-- environment: prod / dev / test / qa / staging
+# ---------------------------------------------------------------------------
+# Pydantic schemas
+# ---------------------------------------------------------------------------
 
-Rules:
-1. Use EXACT column names as they appear in the headers list, including
-   whitespace, casing, and any parenthesized hints.
-2. If multiple sheets look plausible, pick the one with the most inventory-like
-   rows (names + CPU + memory + storage). RVTools files typically use "vInfo".
-3. If a field has no plausible column, set it to null. Do NOT invent columns.
-4. Set memory_unit and storage_unit based on header hints like "MiB", "GB",
-   "MB", "Memory (GB)", "Capacity MiB". If the column clearly holds values in
-   one unit but the header is ambiguous, infer from the sample values (e.g.
-   memory values in the thousands = MB; memory values under 512 = GB).
-5. row_filter is an optional pandas-query-style expression to drop rows that
-   are templates, powered-off replicas, or non-VMs. Leave as null if unsure.
-6. Always return valid JSON matching the schema."""
+class ExtractedItem(BaseModel):
+    """A VM/server Claude extracted directly from the file."""
+
+    name: str = Field(description="Server/VM/host name")
+    vcpu: int = Field(description="Virtual CPUs. If only physical CPU specs are given (e.g. '2 x 16 cores'), compute total cores = sockets × cores_per_socket.")
+    memory_gb: float = Field(description="RAM in GB. Convert MB/MiB to GB by dividing by 1024.")
+    storage_gb: float = Field(description="Total provisioned storage in GB across all disks. Convert TB to GB (multiply by 1024).")
+    os: str = Field(default="Linux", description="OS family, e.g. 'Windows Server 2019', 'Red Hat Enterprise Linux 8', 'Ubuntu 22.04'")
+    environment: str = Field(default="prod", description="prod | dev | test | qa | staging (best guess)")
+    powerstate: str = Field(default="poweredOn", description="poweredOn | poweredOff | unknown")
+    notes: str = Field(default="", description="Any caveats about the extraction (e.g. 'RAID 10 assumed usable = raw/2').")
+
+
+class DirectExtraction(BaseModel):
+    """Claude-produced list of VMs, used for small files."""
+
+    items: List[ExtractedItem] = Field(description="Every server/VM found in the file. Do not invent or skip.")
+    summary: str = Field(default="", description="One-sentence summary of the file's layout and what was extracted.")
 
 
 class InventoryMapping(BaseModel):
-    """Mapping spec produced by Claude."""
+    """Mapping spec for large tabular files (column-to-field mapping applied locally)."""
 
     sheet_name: str = Field(description="Sheet containing the inventory")
     name_col: str = Field(description="Column holding VM/host names")
@@ -75,6 +74,71 @@ class InventoryMapping(BaseModel):
     notes: str = Field(default="", description="Caveats or confidence issues")
 
 
+# ---------------------------------------------------------------------------
+# Prompts
+# ---------------------------------------------------------------------------
+
+DIRECT_SYSTEM_PROMPT = """You are an expert data engineer specializing in IT infrastructure inventory discovery.
+
+You will be given the FULL contents of a spreadsheet or CSV file. Your job is to
+find every server/VM in the file and return a normalized list. The file may be:
+- A tabular row-per-VM inventory (RVTools vInfo, plain CSV with headers)
+- A pivoted/key-value layout where each server occupies multiple rows and
+  attributes like "Processor", "RAM (GB)", "Disk (GB)" appear in one column
+  with values in the next
+- A free-form document with tables scattered across sheets
+- Any combination of the above
+
+Extraction rules:
+
+- name: the server/VM/host name (required). If servers are identified by
+  sections like "ERP1", "ERP2", use those as the name.
+- vcpu: total virtual CPUs available to the VM.
+  * If the file states vCPUs directly, use that.
+  * If only physical CPU specs like "2 x Intel Xeon Gold 6346 (16 Cores, 3.1Ghz)"
+    are given, compute total physical cores = sockets × cores_per_socket
+    (e.g. 2 × 16 = 32). For a virtualized host, that equals usable vCPUs
+    (ignoring hyperthreading unless explicitly stated).
+- memory_gb: total RAM in GB. Convert MB/MiB by dividing by 1024.
+- storage_gb: sum of all provisioned storage across every disk, in GB.
+  * Parse free-text specs like "c: 2 X256GB SSD RAID1" or
+    "D:4 x 1.9TB SSD, RAID 10" — extract the raw capacity per disk, multiply
+    by the count, sum across disks.
+  * RAID accounting: for RAID 1/10 (mirrors), usable = raw / 2. For RAID 5,
+    usable = raw × (n-1)/n. For RAID 0 / JBOD / no RAID, usable = raw.
+    For ambiguous cases prefer USABLE over RAW and explain in notes.
+  * Convert TB → GB by multiplying by 1024.
+  * Always return a single number (sum of all volumes).
+- os: OS family/version text as stated in the source.
+- powerstate: "poweredOn", "poweredOff", or "unknown".
+
+Hard rules:
+1. Return EVERY server present. Do not invent, do not skip.
+2. Never return 0 for vcpu/memory/storage if the file contains enough
+   information to compute a value — always compute and document assumptions
+   in `notes`.
+3. Non-server rows (firewalls, support plans, ISP details, SLA tables, etc.)
+   must be excluded — not returned as items.
+4. Output must strictly match the schema."""
+
+
+MAPPING_SYSTEM_PROMPT = """You are an expert data engineer specializing in IT infrastructure inventory.
+
+You will be given a preview of a spreadsheet (all sheets, all column headers,
+and a row sample). Your job is to pick the sheet that contains the actual
+VM/server inventory and map its columns to a normalized schema so a downstream
+parser can apply the mapping to the full file.
+
+Use EXACT column names as they appear in the headers, including whitespace,
+casing, and parenthesized hints. Infer memory_unit and storage_unit from
+header hints ("Memory MiB", "Capacity GB"). If a field has no plausible
+column, set it to null — do not invent."""
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
 UNIT_TO_GB = {
     "mb": 1 / 1024.0, "mib": 1 / 1024.0,
     "gb": 1.0,        "gib": 1.0,
@@ -83,15 +147,7 @@ UNIT_TO_GB = {
 }
 
 
-def _read_file(data: bytes, filename: str) -> dict[str, pd.DataFrame]:
-    """Return {sheet_name: df} for Excel; {"data": df} for CSV."""
-    if filename.lower().endswith(".csv"):
-        return {"data": pd.read_csv(io.BytesIO(data))}
-    xl = pd.ExcelFile(io.BytesIO(data))
-    return {name: xl.parse(name) for name in xl.sheet_names}
-
-
-def _truncate_cell(v, limit: int = 60) -> str:
+def _truncate_cell(v, limit: int = 80) -> str:
     """Convert any cell value to a short string safely."""
     if v is None:
         return ""
@@ -104,53 +160,115 @@ def _truncate_cell(v, limit: int = 60) -> str:
     return s[:limit] + "..." if len(s) > limit else s
 
 
-def _build_preview(sheets: dict[str, pd.DataFrame], sample_rows: int = 12) -> str:
-    """Build a compact text preview of every sheet for Claude."""
+def _read_file(data: bytes, filename: str) -> dict[str, pd.DataFrame]:
+    """Return {sheet_name: df} for Excel; {"data": df} for CSV."""
+    if filename.lower().endswith(".csv"):
+        return {"data": pd.read_csv(io.BytesIO(data))}
+    xl = pd.ExcelFile(io.BytesIO(data))
+    return {name: xl.parse(name) for name in xl.sheet_names}
+
+
+def _build_preview(sheets: dict[str, pd.DataFrame], sample_rows: Optional[int]) -> str:
+    """Build a text preview. If sample_rows is None, include all rows."""
     parts = []
     for name, df in sheets.items():
         parts.append(f"=== Sheet: {name} ===")
         parts.append(f"Rows: {len(df)} | Columns: {len(df.columns)}")
         parts.append("Headers: " + " | ".join(str(c) for c in df.columns))
         if len(df) > 0:
-            head = df.head(sample_rows)
+            head = df if sample_rows is None else df.head(sample_rows)
             rows_out = [",".join(str(c) for c in head.columns)]
             for _, row in head.iterrows():
                 rows_out.append(",".join(_truncate_cell(v) for v in row.tolist()))
-            parts.append("Sample rows (first " + str(min(sample_rows, len(df))) + "):")
+            tag = "All rows" if sample_rows is None else f"first {min(sample_rows, len(df))}"
+            parts.append(f"Rows ({tag}):")
             parts.append("\n".join(rows_out))
         parts.append("")
     return "\n".join(parts)
 
 
-def ai_generate_mapping(
-    data: bytes,
+# ---------------------------------------------------------------------------
+# Direct extraction (small files)
+# ---------------------------------------------------------------------------
+
+def ai_extract_direct(
+    sheets: dict[str, pd.DataFrame],
     filename: str,
     api_key: str,
-) -> Tuple[InventoryMapping, dict[str, pd.DataFrame]]:
-    """Call Claude to produce a mapping spec for the uploaded file."""
-    sheets = _read_file(data, filename)
-    preview = _build_preview(sheets)
-
+) -> DirectExtraction:
+    """Claude reads the whole file and produces a list of VMs."""
+    preview = _build_preview(sheets, sample_rows=None)
     client = anthropic.Anthropic(api_key=api_key)
 
-    # Structured output via messages.parse + Pydantic schema.
-    # Prompt caching on the system block so repeated uploads in a session are cheap.
     response = client.messages.parse(
         model=MODEL,
         max_tokens=16000,
         system=[
-            {
-                "type": "text",
-                "text": SYSTEM_PROMPT,
-                "cache_control": {"type": "ephemeral"},
-            }
+            {"type": "text", "text": DIRECT_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
         ],
         messages=[
             {
                 "role": "user",
                 "content": (
                     f"File: {filename}\n\n"
-                    f"Here is the preview of every sheet with headers and sample rows.\n\n"
+                    f"Here is the full contents of every sheet.\n\n"
+                    f"{preview}\n\n"
+                    "Extract every server/VM and return the normalized list."
+                ),
+            }
+        ],
+        output_format=DirectExtraction,
+    )
+    return response.parsed_output
+
+
+def _to_inventory_items(extraction: DirectExtraction, include_powered_off: bool) -> List[InventoryItem]:
+    items: List[InventoryItem] = []
+    for x in extraction.items:
+        if not include_powered_off and "off" in (x.powerstate or "").lower():
+            continue
+        if not x.name or (x.vcpu <= 0 and x.memory_gb <= 0):
+            continue
+        items.append(
+            InventoryItem(
+                name=x.name,
+                vcpu=max(int(x.vcpu), 1),
+                memory_gb=float(x.memory_gb),
+                storage_gb=float(x.storage_gb),
+                os=x.os or "Linux",
+                environment=x.environment or "prod",
+                powerstate=x.powerstate or "poweredOn",
+                notes=x.notes or "",
+            )
+        )
+    return items
+
+
+# ---------------------------------------------------------------------------
+# Column mapping (large tabular files)
+# ---------------------------------------------------------------------------
+
+def ai_generate_mapping(
+    data: bytes,
+    filename: str,
+    api_key: str,
+) -> Tuple[InventoryMapping, dict[str, pd.DataFrame]]:
+    sheets = _read_file(data, filename)
+    preview = _build_preview(sheets, sample_rows=12)
+    client = anthropic.Anthropic(api_key=api_key)
+
+    response = client.messages.parse(
+        model=MODEL,
+        max_tokens=16000,
+        system=[
+            {"type": "text", "text": MAPPING_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
+        ],
+        messages=[
+            {
+                "role": "user",
+                "content": (
+                    f"File: {filename}\n\n"
+                    f"Preview of every sheet with headers and sample rows:\n\n"
                     f"{preview}\n\n"
                     "Produce the InventoryMapping for this file."
                 ),
@@ -166,9 +284,7 @@ def apply_mapping(
     sheets: dict[str, pd.DataFrame],
     include_powered_off: bool = False,
 ) -> List[InventoryItem]:
-    """Turn the AI-produced mapping into InventoryItem records."""
     if mapping.sheet_name not in sheets:
-        # Tolerant fallback: case-insensitive match
         lookup = {k.lower(): k for k in sheets}
         key = lookup.get(mapping.sheet_name.lower())
         if not key:
@@ -183,7 +299,7 @@ def apply_mapping(
         try:
             df = df.query(mapping.row_filter)
         except Exception:
-            pass  # filter is best-effort
+            pass
 
     mem_factor = UNIT_TO_GB.get(mapping.memory_unit.lower(), 1.0)
     stor_factor = UNIT_TO_GB.get(mapping.storage_unit.lower(), 1.0)
@@ -222,13 +338,28 @@ def apply_mapping(
     return items
 
 
+# ---------------------------------------------------------------------------
+# Orchestrator
+# ---------------------------------------------------------------------------
+
 def ai_parse_inventory(
     data: bytes,
     filename: str,
     api_key: str,
     include_powered_off: bool = False,
-) -> Tuple[List[InventoryItem], InventoryMapping]:
-    """One-shot helper: preview → AI mapping → apply. Returns (items, mapping)."""
-    mapping, sheets = ai_generate_mapping(data, filename, api_key)
+):
+    """One-shot parser. Returns (items, mode_str, spec) where:
+      - mode_str is "direct" or "mapping"
+      - spec is the DirectExtraction or InventoryMapping used
+    """
+    sheets = _read_file(data, filename)
+    total_rows = sum(len(df) for df in sheets.values())
+
+    if total_rows <= DIRECT_MODE_ROW_CAP:
+        extraction = ai_extract_direct(sheets, filename, api_key)
+        items = _to_inventory_items(extraction, include_powered_off=include_powered_off)
+        return items, "direct", extraction
+
+    mapping, _ = ai_generate_mapping(data, filename, api_key)
     items = apply_mapping(mapping, sheets, include_powered_off=include_powered_off)
-    return items, mapping
+    return items, "mapping", mapping

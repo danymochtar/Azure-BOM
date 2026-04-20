@@ -120,19 +120,26 @@ def _parse_with_fallback(data: bytes, filename: str):
     """Try AI parser (if enabled + key present); fall back to heuristic on failure."""
     if use_ai and anthropic_key:
         try:
-            with st.spinner("Asking Claude to map your inventory columns..."):
-                ai_items, mapping = ai_parse_inventory(
+            with st.spinner("Claude is reading your inventory..."):
+                ai_items, mode, spec = ai_parse_inventory(
                     data, filename, anthropic_key, include_powered_off=include_off
                 )
-            st.success(
-                f"AI parsed {len(ai_items)} items from sheet `{mapping.sheet_name}`. "
-                f"Mapped: name=`{mapping.name_col}`, vCPU=`{mapping.vcpu_col}`, "
-                f"memory=`{mapping.memory_col}` ({mapping.memory_unit}), "
-                f"storage=`{mapping.storage_col}` ({mapping.storage_unit})."
-            )
-            if mapping.notes:
-                st.info(f"AI notes: {mapping.notes}")
-            return ai_items, "ai", mapping
+            if mode == "direct":
+                st.success(
+                    f"AI extracted {len(ai_items)} servers directly from the file. "
+                    f"{spec.summary}"
+                )
+            else:
+                st.success(
+                    f"AI mapped and parsed {len(ai_items)} items from sheet "
+                    f"`{spec.sheet_name}`. Columns: name=`{spec.name_col}`, "
+                    f"vCPU=`{spec.vcpu_col}`, memory=`{spec.memory_col}` "
+                    f"({spec.memory_unit}), storage=`{spec.storage_col}` "
+                    f"({spec.storage_unit})."
+                )
+                if spec.notes:
+                    st.info(f"AI notes: {spec.notes}")
+            return ai_items, "ai", spec
         except Exception as e:
             st.warning(
                 f"AI parser failed ({type(e).__name__}: {e}). "
@@ -163,7 +170,7 @@ if use_sample:
 if items:
     st.subheader("2. Parsed inventory")
     if ai_mapping is not None:
-        with st.expander("AI column mapping", expanded=False):
+        with st.expander("AI extraction details", expanded=False):
             st.json(ai_mapping.model_dump())
     inv_df = pd.DataFrame([{
         "Name": i.name,
