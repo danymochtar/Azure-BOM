@@ -15,6 +15,7 @@ from . import (
     auto_simulate,
     azure_security,
     data_platform,
+    hybrid_multicloud,
     infra_lift_shift,
     infra_modernization,
 )
@@ -27,6 +28,7 @@ PILLAR_ORDER: List[str] = [
     "data_platform",
     "ai_application",
     "azure_security",
+    "hybrid_multicloud",
 ]
 
 
@@ -36,6 +38,7 @@ PILLARS: Dict[str, ModuleType] = {
     "data_platform":       data_platform,
     "ai_application":      ai_application,
     "azure_security":      azure_security,
+    "hybrid_multicloud":   hybrid_multicloud,
 }
 
 
@@ -56,6 +59,7 @@ __all__ = [
     "auto_simulate",
     "azure_security",
     "data_platform",
+    "hybrid_multicloud",
     "infra_lift_shift",
     "infra_modernization",
 ]

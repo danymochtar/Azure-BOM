@@ -91,6 +91,25 @@ still reads the file with Sonnet for VM extraction):
   "la_mb_per_vm_per_day": int,
   "bandwidth_gb":         int
 }""",
+    "hybrid_multicloud": """Schema for hybrid_multicloud.suggested_inputs:
+{
+  "arc_servers":   {"onprem": int, "aws": int, "gcp": int, "edge": int},
+  "arc_sql":       {"licensing": "byol|std_payg|ent_payg|ent_core", "cores": int},
+  "arc_winserver": {"licensing": "byol|std_payg|dc_payg",          "cores": int},
+  "multicloud_defender": ["servers_p2","cspm","sql_on_vms","storage","containers"],
+      // Any subset
+  "multicloud_defender_counts": {"<defender_plan>": number, ...},
+      // e.g. {"sql_on_vms": 16, "storage": 3, "containers": 24}
+  "arc_la_mb_per_server_per_day": int
+}
+Notes:
+- Arc server counts default to 0 per environment; fill them based on doc.
+- Windows Server / SQL Server licensing: pick "byol" if the doc says SA /
+  existing licenses; pick std/ent PAYG when the customer wants to switch
+  to Azure monthly billing for those cores.
+- Defender plans cost the SAME per-resource as for Azure VMs — reuse the
+  server count for servers_p2 / cspm and enter manual vCore counts for
+  sql_on_vms / containers / storage accounts.""",
 }
 
 

@@ -7,6 +7,8 @@ Pillars:
     data_platform        — Fabric / Synapse / Cosmos / Azure SQL / ADLS / ADF / Event Hubs
     ai_application       — Azure OpenAI / AI Search / ML / GPU / Cognitive Services
     azure_security       — Defender / Sentinel / WAF / Private Link / Purview / PIM
+    hybrid_multicloud    — Azure Arc / Defender across AWS+GCP+on-prem / Arc-SQL or
+                           Arc-WinServer licensing
     mixed                — multiple pillars are genuinely first-class
     unknown              — cannot classify confidently
 
@@ -73,6 +75,16 @@ of these five pillars (or `mixed` / `unknown`):
   "CSPM", "EPS / GB/day logs", "retention days", "Zero Trust",
   "compliance / SOC 2 / PCI".
 
+- **hybrid_multicloud** — Azure Arc + Defender applied across on-prem / AWS /
+  GCP; Arc-enabled SQL Server or Windows Server licensing. Goal: cost Arc
+  management (free), Defender plans across non-Azure resources, Arc-SQL
+  PAYG (Std/Ent per core), Windows Server via Arc PAYG (Std/DC per core),
+  Azure Monitor ingestion from Arc agents. Signals: "Azure Arc",
+  "Arc-enabled", "multi-cloud / multicloud", "on-prem AND Azure",
+  "AWS connector / GCP connector", "Arc-SQL", "Arc agent", "hybrid",
+  "data centre consolidation", "Windows Server pay-as-you-go",
+  "SQL Server pay-as-you-go via Arc".
+
 Rules:
 1. Pick the MOST SPECIFIC single pillar when possible. Only use `mixed` when
    multiple pillars are clearly described as first-class (not "VMs plus some
@@ -94,6 +106,8 @@ Rules:
      "cognitive_services", "fine_tuning"
    - Security: "defender_cspm", "defender_servers_p2", "sentinel", "waf",
      "private_link", "purview", "pim"
+   - Hybrid/Multicloud: "azure_arc", "defender_multicloud", "arc_sql_payg",
+     "arc_winserver_payg", "arc_k8s", "arc_la_ingestion"
 4. `signals` short phrases quoting evidence ("column 'SIEM EPS'",
    "sheet 'Model Inventory'", "mentions 'RAG pipeline'").
 5. Keep `summary` to one short sentence."""
