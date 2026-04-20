@@ -6,3 +6,4 @@ xlsxwriter>=3.2
 anthropic>=0.92
 pydantic>=2.7
 streamlit-local-storage>=0.0.23
+python-docx>=1.1

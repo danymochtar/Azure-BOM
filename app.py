@@ -37,6 +37,7 @@ from src.output import (
     build_pricing_calculator_import,
 )
 from src.parsers import parse_inventory, ai_parse_inventory, classify
+from src.parsers.content import ALL_SUPPORTED_EXTS, kind_from_name
 from src.pricing.retail import BILLING_TERMS, RetailPricesClient
 from src import storage, usage_tracker
 from src.workloads import (
@@ -199,9 +200,15 @@ with st.sidebar:
 # ---------------- Upload ----------------
 st.subheader("1. Upload workload description")
 uploaded = st.file_uploader(
-    "RVTools .xlsx, generic Excel/CSV, use-case doc — any format. "
-    "The classifier decides what to run.",
-    type=["xlsx", "xls", "csv"],
+    "Any format: Excel/CSV (RVTools, infra list), PDF (design doc, RFP), "
+    "image (PNG/JPG/GIF/WebP — screenshots of spec tables or diagrams work), "
+    "Word (.docx), or plain text/markdown. The classifier decides what to run.",
+    type=ALL_SUPPORTED_EXTS,
+    help=(
+        "PDFs and images are read natively by Claude (no OCR preprocessing). "
+        "DOCX is text-extracted including tables. Spreadsheets keep the "
+        "fast mapping-based parser for large files."
+    ),
 )
 
 if uploaded is None:
@@ -348,14 +355,24 @@ if run_vm_flow:
                 if mode == "direct" and getattr(spec, "summary", None):
                     st.caption(spec.summary)
             except Exception as e:
-                st.warning(f"AI extraction failed ({type(e).__name__}: {e}). Falling back to heuristic parser.")
+                st.warning(f"AI extraction failed ({type(e).__name__}: {e}).")
                 with st.expander("Traceback", expanded=False):
                     st.code(traceback.format_exc())
-                try:
-                    items, _ = parse_inventory(upload_bytes, upload_name, include_powered_off=include_off)
-                    mode, spec = "heuristic", None
-                except Exception as e2:
-                    st.error(f"Heuristic parser also failed: {e2}")
+                # The heuristic fallback only understands tabular Excel/CSV.
+                if kind_from_name(upload_name) == "spreadsheet":
+                    try:
+                        items, _ = parse_inventory(upload_bytes, upload_name, include_powered_off=include_off)
+                        mode, spec = "heuristic", None
+                        st.info(f"Heuristic parser recovered {len(items)} item(s).")
+                    except Exception as e2:
+                        st.error(f"Heuristic parser also failed: {e2}")
+                        items = []
+                        mode, spec = "failed", None
+                else:
+                    st.error(
+                        "No heuristic fallback for this file type — only AI "
+                        "extraction supports PDF/image/DOCX/text."
+                    )
                     items = []
                     mode, spec = "failed", None
 

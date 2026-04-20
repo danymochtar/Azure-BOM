@@ -20,10 +20,9 @@ from __future__ import annotations
 from typing import List, Optional
 
 import anthropic
-import pandas as pd
 from pydantic import BaseModel, Field
 
-from .ai_inventory import _read_file, _truncate_cell
+from .content import prepare as _prepare_content
 from .. import usage_tracker
 
 
@@ -81,27 +80,28 @@ class AssessmentProfile(BaseModel):
     summary: str = Field(default="", description="One-sentence summary.")
 
 
-def _build_short_preview(sheets: dict[str, pd.DataFrame], max_rows: int = 5) -> str:
-    parts = []
-    for name, df in sheets.items():
-        parts.append(f"=== Sheet: {name} ({len(df)} rows × {len(df.columns)} cols) ===")
-        parts.append("Headers: " + " | ".join(str(c)[:40] for c in df.columns))
-        if len(df) > 0:
-            head = df.head(max_rows)
-            for _, row in head.iterrows():
-                cells = [_truncate_cell(v, limit=40) for v in row.tolist()]
-                parts.append("  | ".join(cells))
-        parts.append("")
-    return "\n".join(parts)
-
-
 def classify(
     data: bytes,
     filename: str,
     api_key: str,
 ) -> AssessmentProfile:
-    sheets = _read_file(data, filename)
-    preview = _build_short_preview(sheets)
+    """Classify a workload from ANY supported file type (Excel/CSV/PDF/image/DOCX/text)."""
+    # Spreadsheets: send a compact 5-row sample. Other kinds: the full
+    # content block (PDF, image, DOCX text, plain text). Native PDF + vision
+    # support means Haiku can classify an architecture doc screenshot without
+    # OCR preprocessing.
+    uc = _prepare_content(data, filename, spreadsheet_preview_rows=5)
+
+    user_content = list(uc.content_blocks) + [
+        {
+            "type": "text",
+            "text": (
+                f"File: {filename}\n"
+                f"Summary: {uc.text_summary}\n\n"
+                "Classify the workload based on the content above."
+            ),
+        }
+    ]
 
     client = anthropic.Anthropic(api_key=api_key, max_retries=4)
     response = client.messages.parse(
@@ -110,17 +110,7 @@ def classify(
         system=[
             {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
         ],
-        messages=[
-            {
-                "role": "user",
-                "content": (
-                    f"File: {filename}\n\n"
-                    f"Compact preview (headers + first 5 rows):\n\n"
-                    f"{preview}\n\n"
-                    "Classify the workload."
-                ),
-            }
-        ],
+        messages=[{"role": "user", "content": user_content}],
         output_format=AssessmentProfile,
     )
     usage_tracker.record("Workload classifier", MODEL, getattr(response, "usage", None))

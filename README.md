@@ -4,6 +4,13 @@ Upload anything — VM inventory, SIEM design doc, AI use-case, data-platform
 spec, or a mixed architecture — and get a live-priced Azure estimate matching
 Microsoft's Azure Pricing Calculator export template.
 
+**Accepted file types:** Excel (.xlsx / .xls), CSV, PDF, images
+(.png / .jpg / .gif / .webp), Word (.docx), plain text / markdown
+(.txt / .md / .json / .yml / .yaml / .log).
+
+PDFs and images are read natively by Claude (no OCR preprocessing). DOCX
+content — including embedded tables — is text-extracted via python-docx.
+
 ## What makes it different
 
 **Classify first, then price.** A cheap Haiku pass classifies the workload

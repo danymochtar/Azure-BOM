@@ -91,14 +91,18 @@ class InventoryMapping(BaseModel):
 
 DIRECT_SYSTEM_PROMPT = """You are an expert data engineer specializing in IT infrastructure inventory discovery.
 
-You will be given the FULL contents of a spreadsheet or CSV file. Your job is to
-find every server/VM in the file and return a normalized list. The file may be:
-- A tabular row-per-VM inventory (RVTools vInfo, plain CSV with headers)
-- A pivoted/key-value layout where each server occupies multiple rows and
-  attributes like "Processor", "RAM (GB)", "Disk (GB)" appear in one column
-  with values in the next
-- A free-form document with tables scattered across sheets
-- Any combination of the above
+You will be given the FULL contents of a file describing a workload. The file
+may be ANY of:
+- A spreadsheet (tabular row-per-VM inventory, e.g. RVTools vInfo)
+- A pivoted/key-value spreadsheet layout (each server occupies multiple rows
+  with attributes like "Processor", "RAM (GB)", "Disk (GB)" in one column and
+  values in the next)
+- A PDF architecture doc or spec sheet
+- An image / screenshot of a spec table or diagram (read it with vision)
+- A Word document (.docx) — narrative architecture with embedded tables
+- A plain-text or markdown infra description
+
+Your job is to find every server/VM described and return a normalized list.
 
 Extraction rules:
 
@@ -203,26 +207,29 @@ def _build_preview(sheets: dict[str, pd.DataFrame], sample_rows: Optional[int]) 
 # ---------------------------------------------------------------------------
 
 def ai_extract_direct(
-    sheets: dict[str, pd.DataFrame],
+    data: bytes,
     filename: str,
     api_key: str,
     strategy_hint: str = "",
     model: str = MODEL,
 ) -> DirectExtraction:
-    """Claude reads the whole file and produces a list of VMs."""
-    preview = _build_preview(sheets, sample_rows=None)
-    # max_retries > default so transient 429s back off and retry automatically
-    client = anthropic.Anthropic(api_key=api_key, max_retries=4)
+    """Claude reads the whole file (any supported kind) and returns a VM list."""
+    from .content import prepare as _prepare_content
 
-    user_content = (
-        f"File: {filename}\n\n"
-        f"Here is the full contents of every sheet.\n\n"
-        f"{preview}\n\n"
+    uc = _prepare_content(data, filename, spreadsheet_preview_rows=None)
+
+    instruction = (
+        f"File: {filename}\n"
+        f"Summary: {uc.text_summary}\n\n"
     )
     if strategy_hint:
-        user_content += f"Migration strategy guidance:\n{strategy_hint}\n\n"
-    user_content += "Extract every server/VM and return the normalized list."
+        instruction += f"Migration strategy guidance:\n{strategy_hint}\n\n"
+    instruction += "Extract every server/VM and return the normalized list."
 
+    user_content = list(uc.content_blocks) + [{"type": "text", "text": instruction}]
+
+    # max_retries > default so transient 429s back off and retry automatically
+    client = anthropic.Anthropic(api_key=api_key, max_retries=4)
     response = client.messages.parse(
         model=model,
         max_tokens=16000,
@@ -369,15 +376,31 @@ def ai_parse_inventory(
     include_powered_off: bool = False,
     strategy_hint: str = "",
 ):
-    """One-shot parser. Returns (items, mode_str, spec) where:
-      - mode_str is "direct" or "mapping"
-      - spec is the DirectExtraction or InventoryMapping used
+    """One-shot parser for any supported file kind.
+
+    Returns `(items, mode_str, spec)` where:
+      - mode_str: "direct" (PDF/image/DOCX/text + small spreadsheets) or
+                  "mapping" (large tabular spreadsheets that would blow the
+                  token budget in direct mode)
+      - spec: DirectExtraction or InventoryMapping used
     """
+    from .content import kind_from_name, prepare as _prepare_content
+
+    kind = kind_from_name(filename)
+
+    # Non-spreadsheet kinds always go through direct extraction. There's no
+    # tabular mapping to apply.
+    if kind != "spreadsheet":
+        extraction = ai_extract_direct(data, filename, api_key, strategy_hint=strategy_hint)
+        items = _to_inventory_items(extraction, include_powered_off=include_powered_off)
+        return items, "direct", extraction
+
+    # Spreadsheets: choose direct vs mapping based on total row count.
     sheets = _read_file(data, filename)
     total_rows = sum(len(df) for df in sheets.values())
 
     if total_rows <= DIRECT_MODE_ROW_CAP:
-        extraction = ai_extract_direct(sheets, filename, api_key, strategy_hint=strategy_hint)
+        extraction = ai_extract_direct(data, filename, api_key, strategy_hint=strategy_hint)
         items = _to_inventory_items(extraction, include_powered_off=include_powered_off)
         return items, "direct", extraction
 
