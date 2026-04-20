@@ -12,6 +12,7 @@ from typing import Dict, List
 
 from . import (
     ai_application,
+    auto_simulate,
     azure_security,
     data_platform,
     infra_lift_shift,
@@ -52,6 +53,7 @@ __all__ = [
     "get_pillar",
     "all_metadata",
     "ai_application",
+    "auto_simulate",
     "azure_security",
     "data_platform",
     "infra_lift_shift",

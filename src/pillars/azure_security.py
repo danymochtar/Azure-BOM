@@ -488,13 +488,21 @@ def defender_plans_for_tier(tier: str) -> List[str]:
 def render_inputs(st, prefs: dict, app_name: str, region: str,
                   upload_bytes: bytes, upload_name: str, profile) -> dict:
     """Render the security pillar's input widgets and return a plain dict."""
-    saved_enabled = set(prefs.get("sec_enabled", []))
+    # prefs may include auto-simulate overlays: `enabled`, `manual_counts`,
+    # `siem_gb_per_day`, `siem_retention_days`, `siem_tier`, `target_scope`.
+    # Fall back to legacy key `sec_enabled` for backward compat.
+    sugg_enabled = set(prefs.get("enabled") or prefs.get("sec_enabled") or [])
+    sugg_manual = prefs.get("manual_counts", {}) or {}
+    default_siem_gb = float(prefs.get("siem_gb_per_day", 0.0))
+    default_siem_retention = int(prefs.get("siem_retention_days", 0))
+    default_siem_tier = prefs.get("siem_tier", "payg")
+
     enabled: List[str] = []
     manual_counts: Dict[str, float] = {}
 
     st.caption("Tick the security services to include. Each component is independent.")
     for key, meta in SECURITY_COMPONENTS.items():
-        default_on = (key in saved_enabled) if saved_enabled else meta["default"]
+        default_on = (key in sugg_enabled) if sugg_enabled else meta["default"]
         on = st.checkbox(meta["label"], value=default_on, key=f"sec_{key}")
         if on:
             enabled.append(key)
@@ -502,31 +510,39 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
                 defender_key = meta.get("defender_plan", key)
                 manual_counts[defender_key] = st.number_input(
                     meta.get("unit_prompt", "Count"),
-                    min_value=0.0, value=0.0, key=f"sec_qty_{key}",
+                    min_value=0.0,
+                    value=float(sugg_manual.get(defender_key, 0.0)),
+                    key=f"sec_qty_{key}",
                 )
 
     st.markdown("**SIEM inputs** (fill only if Sentinel or a SIEM/SOC assessment is in scope)")
     col1, col2, col3 = st.columns(3)
     with col1:
         siem_gb_per_day = st.number_input(
-            "Log ingestion (GB/day)", min_value=0.0, value=0.0, step=5.0,
+            "Log ingestion (GB/day)", min_value=0.0, value=default_siem_gb, step=5.0,
             help="1 EPS ≈ 2-3 MB/day → 10K EPS ≈ 25 GB/day.",
         )
     with col2:
         siem_retention_days = st.number_input(
-            "Retention beyond free 90 days", min_value=0, value=0, step=30,
+            "Retention beyond free 90 days", min_value=0, value=default_siem_retention, step=30,
         )
     with col3:
+        _tier_keys = list(SIEM_COMMITMENT_TIERS.keys())
+        try:
+            _tier_idx = _tier_keys.index(default_siem_tier)
+        except ValueError:
+            _tier_idx = 0
         siem_tier = st.selectbox(
-            "Commitment tier",
-            list(SIEM_COMMITMENT_TIERS.keys()),
+            "Commitment tier", _tier_keys, index=_tier_idx,
             format_func=lambda k: SIEM_COMMITMENT_TIERS[k]["label"],
         )
 
     st.markdown("**Standalone security scope**")
     target_scope = st.number_input(
         "# of resources under governance (used when no VM inventory is ticked)",
-        min_value=0, value=int(prefs.get("security_target_scope", 0)), step=10,
+        min_value=0,
+        value=int(prefs.get("target_scope") or prefs.get("security_target_scope", 0)),
+        step=10,
         help="Drives CSPM / Defender resource counts when this pillar runs without a lift-shift inventory.",
     )
 

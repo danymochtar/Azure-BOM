@@ -308,82 +308,116 @@ def _front_door_line(
 # Pillar contract
 # ---------------------------------------------------------------------------
 
+def _sel_idx(options: list, saved, default_idx: int = 0) -> int:
+    try:
+        return options.index(saved)
+    except (ValueError, TypeError):
+        return default_idx
+
+
 def render_inputs(st, prefs: dict, app_name: str, region: str,
                   upload_bytes: bytes, upload_name: str, profile) -> dict:
+    asvc_pref = prefs.get("app_service", {}) or {}
+    aks_pref = prefs.get("aks", {}) or {}
+    acr_pref = prefs.get("acr", {}) or {}
+    aca_pref = prefs.get("container_apps", {}) or {}
+    apim_pref = prefs.get("apim", {}) or {}
+    fd_pref = prefs.get("front_door", {}) or {}
+
     with st.expander("Azure App Service (Premium v3)", expanded=True):
         c1, c2, c3 = st.columns(3)
         with c1:
+            _app_opts = ["none"] + list(APP_SERVICE_SKUS)
             appsvc_sku = st.selectbox(
-                "Plan SKU",
-                ["none"] + list(APP_SERVICE_SKUS),
+                "Plan SKU", _app_opts,
+                index=_sel_idx(_app_opts, asvc_pref.get("sku", "none")),
                 format_func=lambda k: "None" if k == "none" else APP_SERVICE_SKUS[k],
             )
         with c2:
-            appsvc_count = st.number_input("Instance count", min_value=0, value=0, step=1,
+            appsvc_count = st.number_input("Instance count", min_value=0,
+                                             value=int(asvc_pref.get("count", 0)), step=1,
                                              disabled=(appsvc_sku == "none"))
         with c3:
-            appsvc_os = st.selectbox("OS", ["Linux", "Windows"], disabled=(appsvc_sku == "none"))
+            _os_opts = ["Linux", "Windows"]
+            _os_saved = "Windows" if asvc_pref.get("os_windows") else "Linux"
+            appsvc_os = st.selectbox("OS", _os_opts, index=_sel_idx(_os_opts, _os_saved),
+                                       disabled=(appsvc_sku == "none"))
 
     with st.expander("AKS node pool", expanded=False):
         c1, c2, c3 = st.columns(3)
         with c1:
-            aks_pool_name = st.text_input("Pool name", value="default")
+            aks_pool_name = st.text_input("Pool name", value=str(aks_pref.get("pool_name", "default")))
         with c2:
+            _aks_opts = ["none"] + list(AKS_NODE_SKUS)
             aks_sku = st.selectbox(
-                "Node VM SKU",
-                ["none"] + list(AKS_NODE_SKUS),
+                "Node VM SKU", _aks_opts,
+                index=_sel_idx(_aks_opts, aks_pref.get("sku", "none")),
                 format_func=lambda k: "None" if k == "none" else AKS_NODE_SKUS[k],
             )
         with c3:
-            aks_count = st.number_input("Node count", min_value=0, value=0, step=1, disabled=(aks_sku == "none"))
+            aks_count = st.number_input("Node count", min_value=0, value=int(aks_pref.get("count", 0)),
+                                          step=1, disabled=(aks_sku == "none"))
         c4, c5 = st.columns(2)
         with c4:
-            aks_os = st.selectbox("Node OS", ["Linux", "Windows"], disabled=(aks_sku == "none"))
+            _aks_os_saved = "Windows" if aks_pref.get("os_windows") else "Linux"
+            aks_os = st.selectbox("Node OS", ["Linux", "Windows"],
+                                    index=_sel_idx(["Linux", "Windows"], _aks_os_saved),
+                                    disabled=(aks_sku == "none"))
         with c5:
-            aks_uptime = st.checkbox("Uptime SLA", value=False, disabled=(aks_sku == "none"))
+            aks_uptime = st.checkbox("Uptime SLA", value=bool(aks_pref.get("uptime_sla", False)),
+                                       disabled=(aks_sku == "none"))
 
     with st.expander("Azure Container Registry", expanded=False):
         c1, c2 = st.columns(2)
         with c1:
+            _acr_opts = ["none"] + list(ACR_SKUS)
             acr_sku = st.selectbox(
-                "SKU",
-                ["none"] + list(ACR_SKUS),
+                "SKU", _acr_opts,
+                index=_sel_idx(_acr_opts, acr_pref.get("sku", "none")),
                 format_func=lambda k: "None" if k == "none" else ACR_SKUS[k],
             )
         with c2:
-            acr_geo = st.number_input("Geo-replica regions (Premium only)", min_value=1, value=1, step=1,
-                                       disabled=(acr_sku != "Premium"))
+            acr_geo = st.number_input("Geo-replica regions (Premium only)", min_value=1,
+                                        value=int(acr_pref.get("geo_replica_count", 1)), step=1,
+                                        disabled=(acr_sku != "Premium"))
 
     with st.expander("Azure Container Apps", expanded=False):
         c1, c2, c3 = st.columns(3)
         with c1:
-            aca_vcpu = st.number_input("vCPU-seconds / month", min_value=0.0, value=0.0, step=100_000.0)
+            aca_vcpu = st.number_input("vCPU-seconds / month", min_value=0.0,
+                                         value=float(aca_pref.get("vcpu_seconds", 0.0)), step=100_000.0)
         with c2:
-            aca_mem = st.number_input("Memory GiB-seconds / month", min_value=0.0, value=0.0, step=100_000.0)
+            aca_mem = st.number_input("Memory GiB-seconds / month", min_value=0.0,
+                                        value=float(aca_pref.get("mem_gib_seconds", 0.0)), step=100_000.0)
         with c3:
-            aca_req = st.number_input("Requests (millions / month)", min_value=0.0, value=0.0, step=1.0)
+            aca_req = st.number_input("Requests (millions / month)", min_value=0.0,
+                                        value=float(aca_pref.get("request_millions", 0.0)), step=1.0)
 
     with st.expander("API Management", expanded=False):
         c1, c2 = st.columns(2)
         with c1:
+            _apim_opts = ["none"] + list(APIM_TIERS)
             apim_tier = st.selectbox(
-                "Tier",
-                ["none"] + list(APIM_TIERS),
+                "Tier", _apim_opts,
+                index=_sel_idx(_apim_opts, apim_pref.get("tier", "none")),
                 format_func=lambda k: "None" if k == "none" else APIM_TIERS[k],
             )
         with c2:
-            apim_units = st.number_input("Units", min_value=0, value=0, step=1, disabled=(apim_tier == "none"))
+            apim_units = st.number_input("Units", min_value=0, value=int(apim_pref.get("units", 0)),
+                                           step=1, disabled=(apim_tier == "none"))
 
     with st.expander("Azure Front Door", expanded=False):
         c1, c2 = st.columns(2)
         with c1:
+            _fd_opts = ["none"] + list(FRONT_DOOR_TIERS)
             fd_tier = st.selectbox(
-                "Tier",
-                ["none"] + list(FRONT_DOOR_TIERS),
+                "Tier", _fd_opts,
+                index=_sel_idx(_fd_opts, fd_pref.get("tier", "none")),
                 format_func=lambda k: "None" if k == "none" else FRONT_DOOR_TIERS[k],
             )
         with c2:
-            fd_routes = st.number_input("Routes (info)", min_value=0, value=0, step=1, disabled=(fd_tier == "none"))
+            fd_routes = st.number_input("Routes (info)", min_value=0, value=int(fd_pref.get("routes", 0)),
+                                          step=1, disabled=(fd_tier == "none"))
 
     return {
         "app_service": {

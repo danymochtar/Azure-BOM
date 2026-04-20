@@ -28,6 +28,7 @@ from src.output import (
 from src.parsers import classify
 from src.parsers.content import ALL_SUPPORTED_EXTS
 from src.pillars import PILLAR_ORDER, PILLARS, all_metadata, get_pillar
+from src.pillars.auto_simulate import simulate as auto_simulate
 from src.pricing.retail import BILLING_TERMS, RetailPricesClient
 from src import storage, usage_tracker
 
@@ -274,6 +275,23 @@ if not active_pillars:
     st.info("Pick at least one pillar to run the assessment.")
     st.stop()
 
+# Auto-simulate toggle: ask Sonnet to read the upload and pre-fill pillar
+# inputs with assumed values + follow-up questions. Skipped for lift-shift
+# (which runs its own Sonnet extractor for VM specs).
+auto_sim_default = any(
+    not PILLAR_META[pk]["needs_vm_extraction"] for pk in active_pillars
+)
+auto_sim_enabled = st.checkbox(
+    "🔮 Auto-simulate inputs from the document (Sonnet reads the doc, pre-fills "
+    "each pillar's inputs, and lists its assumptions + follow-up questions)",
+    value=auto_sim_default,
+    help=(
+        "Uses ~2-5K Sonnet tokens per pillar. Cached per (file, pillar, your "
+        "answers) so toggling widgets won't re-hit the API. Skip for pure VM "
+        "lift-and-shift — that pillar reads the file on its own."
+    ),
+)
+
 # ---------------- Stage B: per-pillar inputs ----------------
 st.subheader("3. Pillar inputs")
 
@@ -281,8 +299,74 @@ pillar_inputs: dict = {}
 for pk in active_pillars:
     md = PILLAR_META[pk]
     with st.expander(f"{md['icon']} {md['label']} — {md['description']}", expanded=True):
+        merged_prefs = dict(_prefs)
+
+        if auto_sim_enabled and not md["needs_vm_extraction"] and anthropic_key:
+            # Load previous answers the user may have typed for this pillar
+            answers_key = f"_sim_answers::{pk}"
+            prior_answers = st.session_state.get(answers_key, {})
+
+            sim_cache_key = (
+                f"_sim::{hash(upload_bytes)}::{upload_name}::{pk}::"
+                f"{sorted((prior_answers or {}).items())}"
+            )
+            if sim_cache_key in st.session_state:
+                sim = st.session_state[sim_cache_key]
+            else:
+                try:
+                    with st.spinner(f"Auto-simulating inputs for {md['label']}…"):
+                        sim = auto_simulate(
+                            pillar=pk,
+                            data=upload_bytes,
+                            filename=upload_name,
+                            api_key=anthropic_key,
+                            prior_answers=prior_answers,
+                        )
+                    st.session_state[sim_cache_key] = sim
+                except Exception as e:
+                    st.warning(
+                        f"Auto-simulate failed for {md['label']} "
+                        f"({type(e).__name__}: {e}). Falling back to defaults."
+                    )
+                    with st.expander("Traceback", expanded=False):
+                        st.code(traceback.format_exc())
+                    sim = None
+
+            if sim is not None:
+                # Overlay Sonnet's suggestions onto the prefs passed to render_inputs
+                merged_prefs.update(sim.suggested_inputs)
+                merged_prefs["ai_openai_usage"] = sim.suggested_inputs.get("openai_usage", {})
+                merged_prefs["ai_foundry_usage"] = sim.suggested_inputs.get("foundry_usage", {})
+
+                cols_head = st.columns([3, 1])
+                cols_head[0].markdown(f"**Auto-simulated from the document** (confidence {sim.confidence:.0%})")
+                if cols_head[1].button("Re-run simulate", key=f"rerun_{pk}"):
+                    st.session_state.pop(sim_cache_key, None)
+                    st.rerun()
+
+                if sim.assumptions:
+                    with st.expander("🧮 Assumptions used", expanded=False):
+                        for a in sim.assumptions:
+                            st.markdown(f"- {a}")
+
+                if sim.open_questions:
+                    with st.expander("❓ Follow-up questions (answer to tighten the estimate)", expanded=True):
+                        new_answers = dict(prior_answers)
+                        for i, q in enumerate(sim.open_questions):
+                            new_answers[q] = st.text_input(
+                                q, value=prior_answers.get(q, ""),
+                                key=f"sim_q_{pk}_{i}",
+                            )
+                        if st.button("Refine with answers", key=f"refine_{pk}"):
+                            st.session_state[answers_key] = new_answers
+                            # Invalidate the cached simulation so the next render re-runs with answers
+                            for k in list(st.session_state):
+                                if k.startswith(f"_sim::") and f"::{pk}::" in k:
+                                    st.session_state.pop(k, None)
+                            st.rerun()
+
         pillar_inputs[pk] = get_pillar(pk).render_inputs(
-            st, _prefs, app_name, region, upload_bytes, upload_name, profile,
+            st, merged_prefs, app_name, region, upload_bytes, upload_name, profile,
         )
 
 # Cross-pillar wiring: share lift-shift vm_count + la_gb with azure_security.
