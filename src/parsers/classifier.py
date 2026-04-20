@@ -24,6 +24,7 @@ import pandas as pd
 from pydantic import BaseModel, Field
 
 from .ai_inventory import _read_file, _truncate_cell
+from .. import usage_tracker
 
 
 MODEL = "claude-haiku-4-5"
@@ -122,4 +123,5 @@ def classify(
         ],
         output_format=AssessmentProfile,
     )
+    usage_tracker.record("Workload classifier", MODEL, getattr(response, "usage", None))
     return response.parsed_output

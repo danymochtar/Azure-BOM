@@ -24,6 +24,7 @@ import pandas as pd
 from pydantic import BaseModel, Field
 
 from ..models import InventoryItem
+from .. import usage_tracker
 
 
 # Sonnet 4.6 is the sweet spot for structured inventory extraction: strong
@@ -231,6 +232,7 @@ def ai_extract_direct(
         messages=[{"role": "user", "content": user_content}],
         output_format=DirectExtraction,
     )
+    usage_tracker.record("Inventory extraction (direct)", model, getattr(response, "usage", None))
     return response.parsed_output
 
 
@@ -293,6 +295,7 @@ def ai_generate_mapping(
         ],
         output_format=InventoryMapping,
     )
+    usage_tracker.record("Inventory extraction (mapping)", model, getattr(response, "usage", None))
     return response.parsed_output, sheets
 
 

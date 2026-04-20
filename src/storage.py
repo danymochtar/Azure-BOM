@@ -33,6 +33,7 @@ KEY_PREFS = NS + "prefs"
 KEY_API = NS + "anthropic_api_key"
 KEY_LAST_BOM = NS + "last_bom"
 KEY_LAST_PROFILE = NS + "last_profile"
+KEY_AUTH = NS + "auth_ok"
 
 
 def _client() -> Optional["LocalStorage"]:
@@ -147,10 +148,25 @@ def clear_last_bom() -> None:
     _delete(KEY_LAST_BOM)
 
 
+# ---------- auth flag (opt-in, convenience only — NOT a real security boundary) ----------
+
+def load_auth_ok() -> bool:
+    return bool(_get_json(KEY_AUTH, False))
+
+
+def save_auth_ok() -> None:
+    _set_json(KEY_AUTH, True)
+
+
+def clear_auth_ok() -> None:
+    _delete(KEY_AUTH)
+
+
 # ---------- nuke everything ----------
 
 def clear_all() -> None:
     clear_prefs()
     clear_api_key()
     clear_last_bom()
+    clear_auth_ok()
     _delete(KEY_LAST_PROFILE)

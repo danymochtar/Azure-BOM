@@ -35,7 +35,7 @@ AZURE_REGIONS = [
 
 CURRENCIES = ["USD", "EUR", "GBP", "AUD", "JPY", "CAD", "BRL", "INR", "SGD"]
 
-DEFAULT_REGION = "malaysiacentral"
+DEFAULT_REGION = "malaysiawest"
 DEFAULT_CURRENCY = "USD"
 
 # When a service has no retail price in the primary region, query these

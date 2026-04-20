@@ -12,7 +12,9 @@ Run:
 """
 from __future__ import annotations
 
+import hmac
 import traceback
+from dataclasses import asdict
 from pathlib import Path
 
 import pandas as pd
@@ -33,11 +35,10 @@ from src.landing_zone import LANDING_ZONE_COMPONENTS, build_landing_zone_bom
 from src.output import (
     build_excel_bom,
     build_pricing_calculator_import,
-    build_pricing_calculator_links,
 )
 from src.parsers import parse_inventory, ai_parse_inventory, classify
 from src.pricing.retail import BILLING_TERMS, RetailPricesClient
-from src import storage
+from src import storage, usage_tracker
 from src.workloads import (
     AZURE_OPENAI_MODELS,
     FABRIC_CAPACITIES,
@@ -49,6 +50,45 @@ from src.workloads import (
 
 
 st.set_page_config(page_title="Azure Cost Assessment", page_icon="$", layout="wide")
+
+
+# ---------------- Access control ----------------
+# Hardcoded shared credentials (deliberately — this app is deployed for a
+# specific audience on a private Streamlit Cloud URL). If you fork, change these.
+_AUTH_USER = "admin"
+_AUTH_PASS = "noventiqazure"
+
+
+def _require_login() -> None:
+    """Render a login form and st.stop() until the correct creds are entered."""
+    if st.session_state.get("_authed"):
+        return
+    # Persistent login flag from localStorage (opt-in, client-trustable only)
+    if storage.load_auth_ok():
+        st.session_state["_authed"] = True
+        return
+
+    st.title("Azure Cost Assessment — Sign in")
+    with st.form("_login_form"):
+        u = st.text_input("Username")
+        p = st.text_input("Password", type="password")
+        remember = st.checkbox("Remember me on this browser", value=True)
+        submit = st.form_submit_button("Sign in", type="primary")
+    if submit:
+        ok_user = hmac.compare_digest(u or "", _AUTH_USER)
+        ok_pass = hmac.compare_digest(p or "", _AUTH_PASS)
+        if ok_user and ok_pass:
+            st.session_state["_authed"] = True
+            if remember:
+                storage.save_auth_ok()
+            st.rerun()
+        else:
+            st.error("Invalid credentials.")
+    st.stop()
+
+
+_require_login()
+
 
 st.title("Azure Cost Assessment")
 st.caption(
@@ -147,8 +187,13 @@ with st.sidebar:
         if col_s1.button("Clear saved prefs"):
             storage.clear_prefs()
             st.rerun()
-        if col_s2.button("Clear everything", help="Prefs + API key + last result"):
+        if col_s2.button("Clear everything", help="Prefs + API key + last result + login"):
             storage.clear_all()
+            st.session_state.pop("_authed", None)
+            st.rerun()
+        if st.button("Sign out"):
+            storage.clear_auth_ok()
+            st.session_state.pop("_authed", None)
             st.rerun()
 
 # ---------------- Upload ----------------
@@ -636,6 +681,42 @@ if "bom_lines" in st.session_state:
             mime="application/json",
         )
 
-    st.subheader("7. Azure Pricing Calculator links")
-    for link in build_pricing_calculator_links(lines):
-        st.markdown(f"- [{link['label']}]({link['url']})")
+    # Token spend breakdown — per-process Claude API usage + USD cost
+    usage_list = usage_tracker.get_usage()
+    if usage_list:
+        st.subheader("7. AI token spend (this session)")
+        st.caption(
+            "Per-process breakdown of Claude API usage. Input tokens = fresh "
+            "prompt bytes (full-price). Cache read / write = prompt-caching "
+            "savings. USD cost = retail API pricing."
+        )
+        usage_df = pd.DataFrame([{
+            "Process": u.process,
+            "Model": u.model,
+            "Input tokens": u.input_tokens,
+            "Cache read tokens": u.cache_read_tokens,
+            "Cache create tokens": u.cache_creation_tokens,
+            "Output tokens": u.output_tokens,
+            "USD cost": round(u.usd_cost, 6),
+        } for u in usage_list])
+        # Append a totals row
+        totals = pd.DataFrame([{
+            "Process": "TOTAL",
+            "Model": "",
+            "Input tokens": int(usage_df["Input tokens"].sum()),
+            "Cache read tokens": int(usage_df["Cache read tokens"].sum()),
+            "Cache create tokens": int(usage_df["Cache create tokens"].sum()),
+            "Output tokens": int(usage_df["Output tokens"].sum()),
+            "USD cost": round(float(usage_df["USD cost"].sum()), 6),
+        }])
+        st.dataframe(pd.concat([usage_df, totals], ignore_index=True), use_container_width=True, hide_index=True)
+        total_usd = float(usage_df["USD cost"].sum())
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Calls", len(usage_df))
+        c2.metric("Total tokens", int(
+            usage_df["Input tokens"].sum()
+            + usage_df["Cache read tokens"].sum()
+            + usage_df["Cache create tokens"].sum()
+            + usage_df["Output tokens"].sum()
+        ))
+        c3.metric("Total AI cost (USD)", f"${total_usd:.4f}")
