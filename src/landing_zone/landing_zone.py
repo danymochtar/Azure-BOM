@@ -107,6 +107,24 @@ LANDING_ZONE_COMPONENTS: List[LzComponent] = [
         ),
     ),
     LzComponent(
+        key="app_gateway_waf",
+        category="Networking",
+        resource="Application Gateway WAF v2 (1 instance)",
+        default_enabled=False,
+        quantity=HOURS_PER_MONTH,
+        unit="hours",
+        build_filter=lambda region: (
+            f"serviceName eq 'Application Gateway' and armRegionName eq '{region}' "
+            f"and priceType eq 'Consumption'"
+        ),
+        pick=_contains_all("waf v2", "gateway"),
+        notes=(
+            "Azure Application Gateway v2 with Web Application Firewall (WAF). "
+            "Layer-7 reverse proxy + OWASP rules. Capacity Units are billed "
+            "separately based on throughput; 1 CU baseline assumed here."
+        ),
+    ),
+    LzComponent(
         key="firewall",
         category="Networking",
         resource="Azure Firewall (Standard)",

@@ -116,6 +116,9 @@ with st.sidebar:
         )
         if on and include_lz:
             lz_selected.append(comp.key)
+            # recovery_vault and log_analytics are driven dynamically below
+            if comp.key in ("recovery_vault", "log_analytics"):
+                continue
             with st.expander(f"Quantity ({comp.unit})", expanded=False):
                 lz_overrides[comp.key] = st.number_input(
                     f"Qty in {comp.unit}",
@@ -125,6 +128,36 @@ with st.sidebar:
                     label_visibility="collapsed",
                 )
                 st.caption(comp.notes)
+
+    st.subheader("Dynamic sizing")
+    backup_pct = st.slider(
+        "Azure Backup — % of total provisioned storage",
+        min_value=0,
+        max_value=200,
+        value=40,
+        step=5,
+        help=(
+            "Total backed-up GB = this percent × sum of all VM disks. "
+            "40% is a typical starting point for daily incrementals + "
+            "30-day retention; raise for longer retention (e.g. GFS with "
+            "12-month retention can reach 100-150%)."
+        ),
+    )
+    la_mb_per_vm_per_day = st.number_input(
+        "Log Analytics — MB/day per VM",
+        min_value=0,
+        max_value=5000,
+        value=200,
+        step=50,
+        help=(
+            "Monthly Log Analytics GB = this × VM count × 30 ÷ 1024.\n\n"
+            "Baselines:\n"
+            "• ~100-200 MB/day: Azure Monitor Agent with perf counters + "
+            "basic Windows/syslog events.\n"
+            "• +200-500 MB/day: Defender for Servers P2 security events.\n"
+            "• +500 MB-1 GB/day: full Sentinel onboarding with UEBA."
+        ),
+    )
 
     st.divider()
     st.subheader("Sizing")
@@ -238,6 +271,10 @@ if items:
 
     st.subheader("3. Generate BOM")
     region_pair = region if not secondary_region else f"{region} → {secondary_region}"
+    _total_storage = sum(i.storage_gb for i in items)
+    _vm_count = sum(1 for i in items if "off" not in (i.powerstate or "").lower())
+    _backup_gb_preview = round(_total_storage * backup_pct / 100.0, 2)
+    _la_gb_preview = round(la_mb_per_vm_per_day * _vm_count * 30 / 1024.0, 2)
     st.caption(
         f"Region(s): **{region_pair}** · "
         f"Strategy: **{MIGRATION_STRATEGIES[strategy_key]['label']}** · "
@@ -245,6 +282,12 @@ if items:
         f"HA: **{'on' if include_ha else 'off'}** · "
         f"BCDR: **{'on' if include_bcdr else 'off'}** · "
         f"Security: **{SECURITY_TIERS[security_tier]['label']}**"
+    )
+    st.caption(
+        f"Dynamic sizing · Backup: **{_backup_gb_preview:,.1f} GB** "
+        f"({backup_pct}% of {_total_storage:,.1f} GB) · "
+        f"Log Analytics: **{_la_gb_preview:,.1f} GB/mo** "
+        f"({la_mb_per_vm_per_day} MB/day × {_vm_count} VMs × 30)"
     )
     if st.button("Generate Azure BOM", type="primary"):
         with st.spinner("Calling Azure Retail Prices API and building BOM..."):
@@ -264,6 +307,16 @@ if items:
             if include_ha:
                 compute_lines = apply_ha_multiplier(compute_lines, factor=2)
                 ha_extra = build_ha_bom(client=client, region=region)
+
+            # Compute dynamic quantities from inventory + user inputs
+            vm_count = aggregate_vm_count(items)
+            total_storage_gb = round(sum(i.storage_gb for i in items), 2)
+            backup_gb = round(total_storage_gb * backup_pct / 100.0, 2)
+            la_gb = round(
+                la_mb_per_vm_per_day * vm_count * 30 / 1024.0, 2
+            )
+            lz_overrides.setdefault("recovery_vault", backup_gb)
+            lz_overrides.setdefault("log_analytics", la_gb)
 
             # Landing zone
             lz_lines: list = []
@@ -285,13 +338,17 @@ if items:
                     secondary_region=secondary_region,
                 )
 
-            # Security tier (replaces individual Defender checkboxes)
-            vm_count = aggregate_vm_count(items)
+            # Security tier. Only add its own Log Analytics line if the LZ
+            # isn't already carrying log_analytics (otherwise double-billing).
+            lz_has_la = include_lz and "log_analytics" in lz_selected
             sec_lines = build_security_tier_bom(
                 client=client,
                 region=region,
                 tier=security_tier,
                 vm_count=vm_count,
+                log_analytics_gb=la_gb,
+                sentinel_gb=la_gb,
+                add_log_analytics=not lz_has_la,
             )
 
             all_lines = compute_lines + ha_extra + lz_lines + bcdr_lines + sec_lines

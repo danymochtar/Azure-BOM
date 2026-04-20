@@ -159,8 +159,14 @@ def build_security_tier_bom(
     sentinel_gb: Optional[float] = None,
     log_analytics_gb: Optional[float] = None,
     defender_manual_counts: Optional[Dict[str, float]] = None,
+    add_log_analytics: bool = True,
 ) -> List[BomLine]:
-    """Build all security-tier lines for the chosen tier."""
+    """Build security-tier lines for the chosen tier.
+
+    `add_log_analytics=False` suppresses the Log Analytics ingestion line —
+    use this when the Landing Zone already includes Log Analytics, to avoid
+    double-billing.
+    """
     cfg = SECURITY_TIERS.get(tier, SECURITY_TIERS["none"])
     lines: List[BomLine] = []
 
@@ -182,13 +188,14 @@ def build_security_tier_bom(
         if cspm:
             lines.append(cspm)
 
-    # Log Analytics
+    # Log Analytics (only if LZ isn't already carrying it)
     la_gb = log_analytics_gb if log_analytics_gb is not None else cfg["log_analytics_gb"]
-    la = _log_analytics_line(client, region, la_gb)
-    if la:
-        lines.append(la)
+    if add_log_analytics and la_gb > 0:
+        la = _log_analytics_line(client, region, la_gb)
+        if la:
+            lines.append(la)
 
-    # Sentinel (full only)
+    # Sentinel (full only) — priced on the same ingestion volume
     if cfg["add_sentinel"]:
         s_gb = sentinel_gb if sentinel_gb is not None else la_gb
         sn = _sentinel_line(client, region, s_gb)
