@@ -6,6 +6,7 @@ Run:
 from __future__ import annotations
 
 import io
+import traceback
 from pathlib import Path
 
 import pandas as pd
@@ -134,9 +135,11 @@ def _parse_with_fallback(data: bytes, filename: str):
             return ai_items, "ai", mapping
         except Exception as e:
             st.warning(
-                f"AI parser failed ({e}). Falling back to heuristic parser. "
-                "If your file has unusual columns, try again or check your API key."
+                f"AI parser failed ({type(e).__name__}: {e}). "
+                "Falling back to heuristic parser."
             )
+            with st.expander("AI parser traceback", expanded=False):
+                st.code(traceback.format_exc())
     its, f = parse_inventory(data, filename, include_powered_off=include_off)
     return its, f, None
 

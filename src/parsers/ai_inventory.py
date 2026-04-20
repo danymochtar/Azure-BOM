@@ -91,6 +91,19 @@ def _read_file(data: bytes, filename: str) -> dict[str, pd.DataFrame]:
     return {name: xl.parse(name) for name in xl.sheet_names}
 
 
+def _truncate_cell(v, limit: int = 60) -> str:
+    """Convert any cell value to a short string safely."""
+    if v is None:
+        return ""
+    try:
+        if pd.isna(v):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    s = str(v)
+    return s[:limit] + "..." if len(s) > limit else s
+
+
 def _build_preview(sheets: dict[str, pd.DataFrame], sample_rows: int = 12) -> str:
     """Build a compact text preview of every sheet for Claude."""
     parts = []
@@ -99,11 +112,12 @@ def _build_preview(sheets: dict[str, pd.DataFrame], sample_rows: int = 12) -> st
         parts.append(f"Rows: {len(df)} | Columns: {len(df.columns)}")
         parts.append("Headers: " + " | ".join(str(c) for c in df.columns))
         if len(df) > 0:
-            sample = df.head(sample_rows).copy()
-            # Stringify and truncate long cells
-            sample = sample.astype(str).map(lambda v: v[:60] + "..." if len(v) > 60 else v)
+            head = df.head(sample_rows)
+            rows_out = [",".join(str(c) for c in head.columns)]
+            for _, row in head.iterrows():
+                rows_out.append(",".join(_truncate_cell(v) for v in row.tolist()))
             parts.append("Sample rows (first " + str(min(sample_rows, len(df))) + "):")
-            parts.append(sample.to_csv(index=False))
+            parts.append("\n".join(rows_out))
         parts.append("")
     return "\n".join(parts)
 
@@ -124,8 +138,6 @@ def ai_generate_mapping(
     response = client.messages.parse(
         model=MODEL,
         max_tokens=16000,
-        thinking={"type": "adaptive"},
-        output_config={"effort": "medium"},
         system=[
             {
                 "type": "text",
