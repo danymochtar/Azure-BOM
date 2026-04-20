@@ -1,0 +1,11 @@
+name,vcpu,memory_gb,storage_gb,os,environment
+web01,2,4,80,Linux,prod
+web02,2,4,80,Linux,prod
+app01,4,16,200,Linux,prod
+app02,4,16,200,Linux,prod
+db01,8,64,1000,Windows,prod
+db02,8,64,1000,Windows,prod
+cache01,2,8,50,Linux,prod
+jump01,2,4,60,Windows,mgmt
+build01,8,32,500,Linux,dev
+bi01,16,128,2000,Windows,prod
