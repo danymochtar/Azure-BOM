@@ -49,6 +49,15 @@ with st.sidebar:
     st.header("Configuration")
     currency = st.selectbox("Currency", CURRENCIES, index=CURRENCIES.index(DEFAULT_CURRENCY))
 
+    st.subheader("Project")
+    app_name = st.text_input(
+        "Application / workload name",
+        value="",
+        placeholder="e.g. ERPSuite, FinanceApp",
+        help="Tagged into the 'Custom name' column of the Excel BOM so every "
+             "line is traceable to this workload. Leave blank for generic.",
+    )
+
     st.subheader("Regions")
     region = st.selectbox(
         "Primary region",
@@ -312,6 +321,7 @@ if items:
                 headroom=headroom,
                 disk_tier=disk_tier,
                 os_override=os_mode,
+                app_name=app_name,
             )
 
             # HA — duplicate compute/storage lines and add Load Balancer
@@ -376,6 +386,7 @@ if items:
             st.session_state["mapping_rows"] = mapping_rows
             st.session_state["region"] = region
             st.session_state["currency"] = currency
+            st.session_state["app_name"] = app_name
 
 # ---------------- Results ----------------
 if "bom_lines" in st.session_state:
@@ -411,11 +422,18 @@ if "bom_lines" in st.session_state:
     st.subheader("5. Download")
     col_d1, col_d2 = st.columns(2)
     with col_d1:
-        excel_bytes = build_excel_bom(lines, mapping_rows, region, currency)
+        excel_bytes = build_excel_bom(
+            lines,
+            mapping_rows,
+            region,
+            currency,
+            app_name=st.session_state.get("app_name", ""),
+        )
+        _fname_app = (st.session_state.get("app_name") or "estimate").replace(" ", "-")
         st.download_button(
-            "Download Excel BOM",
+            "Download Excel estimate (Azure Pricing Calculator template)",
             excel_bytes,
-            file_name=f"azure-bom-{region}.xlsx",
+            file_name=f"azure-{_fname_app}-{region}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
     with col_d2:

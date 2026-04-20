@@ -20,6 +20,7 @@ def build_compute_bom(
     headroom: float = 1.3,
     disk_tier: str = "Premium SSD",
     os_override: str = "as-detected",
+    app_name: str = "",
 ) -> Tuple[List[BomLine], List[dict]]:
     """Return (bom lines, mapping_rows) where mapping_rows is a per-VM record
     showing source specs -> target Azure SKUs for UI display.
@@ -60,6 +61,16 @@ def build_compute_bom(
     # Price VMs
     for (arm_name, win), grp in vm_groups.items():
         sku = grp["sku"]
+        # Custom name = concatenated VM names (short) or "<app>-<sku>" fallback
+        names = grp["names"]
+        if len(names) == 1:
+            vm_custom = names[0]
+        elif len(names) <= 3:
+            vm_custom = ", ".join(names)
+        else:
+            vm_custom = f"{names[0]}+{len(names)-1}-more"
+        if app_name:
+            vm_custom = f"{app_name}-{vm_custom}"
         price = client.vm_price(arm_name, region, os_is_windows=win)
         if not price:
             lines.append(BomLine(
@@ -73,6 +84,8 @@ def build_compute_bom(
                 unit_price=0.0,
                 monthly_cost=0.0,
                 source="retail-prices-miss",
+                service_name="Virtual Machines",
+                custom_name=vm_custom,
             ))
             continue
         qty_hours = grp["count"] * HOURS_PER_MONTH
@@ -91,11 +104,14 @@ def build_compute_bom(
             product_id=price.product_id,
             sku_id=price.sku_id,
             meter_id=price.meter_id,
+            service_name="Virtual Machines",
+            custom_name=vm_custom,
         ))
 
     # Price disks
     for sku_name, grp in disk_groups.items():
         disk = grp["disk"]
+        disk_custom = f"{app_name}-Data-{disk.sku}" if app_name else f"Data-{disk.sku}"
         price = client.disk_price(disk.meter_name, region)
         if not price:
             lines.append(BomLine(
@@ -109,6 +125,8 @@ def build_compute_bom(
                 unit_price=0.0,
                 monthly_cost=0.0,
                 source="retail-prices-miss",
+                service_name="Managed Disks",
+                custom_name=disk_custom,
             ))
             continue
         lines.append(BomLine(
@@ -126,6 +144,8 @@ def build_compute_bom(
             product_id=price.product_id,
             sku_id=price.sku_id,
             meter_id=price.meter_id,
+            service_name="Managed Disks",
+            custom_name=disk_custom,
         ))
 
     return lines, mapping_rows

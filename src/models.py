@@ -30,6 +30,9 @@ class BomLine:
     product_id: str = ""
     sku_id: str = ""
     meter_id: str = ""
+    # Azure Pricing Calculator template fields
+    service_name: str = ""   # e.g., "Virtual Machines", "Managed Disks", "Azure Firewall"
+    custom_name: str = ""    # per-line tag: app name / workload / hub-role
 
     def to_row(self) -> dict:
         return asdict(self)
