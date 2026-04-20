@@ -1,4 +1,9 @@
-"""Migration strategy constants + prompt guidance for the AI parser."""
+"""Migration strategy constants + per-pillar prompt guidance for the AI parser.
+
+`strategy_guidance(strategy, ha_enabled)` is scoped to the infra_lift_shift
+pillar. `pillar_extraction_hint(pillar, strategy, ha_enabled)` dispatches to
+the right hint for whichever pillar is running Sonnet extraction.
+"""
 
 MIGRATION_STRATEGIES = {
     "iaas": {
@@ -82,4 +87,22 @@ def strategy_guidance(strategy: str, ha_enabled: bool = False) -> str:
             "'Azure Virtual Machine' and explain why in `notes`."
         )
 
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# Pillar-aware extraction hints
+# ---------------------------------------------------------------------------
+
+def pillar_extraction_hint(
+    pillar: str,
+    strategy: str | None = None,
+    ha_enabled: bool = False,
+) -> str:
+    """Return the text guidance appended to the Sonnet extractor prompt for
+    a specific pillar. Currently only infra_lift_shift uses the Sonnet
+    extractor; other pillars rely on user-provided inputs.
+    """
+    if pillar == "infra_lift_shift":
+        return strategy_guidance(strategy or "iaas", ha_enabled=ha_enabled)
     return ""

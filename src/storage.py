@@ -100,6 +100,9 @@ DEFAULT_PREFS: dict = {
     "headroom": 1.3,
     "disk_tier": "Premium SSD",
     "os_mode": "as-detected",
+    # Pillar-based scoping
+    "active_pillars": [],
+    "security_target_scope": 0,
 }
 
 
