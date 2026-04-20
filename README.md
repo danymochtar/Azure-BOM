@@ -14,8 +14,13 @@ Pricing is pulled live from the public Azure Retail Prices API
 
 ## Features
 
-- **Inputs**: RVTools `vInfo` sheet, generic inventory Excel/CSV (auto-mapped
-  columns), or hand-built infra list
+- **AI parser (Claude Opus 4.7)**: handles *any* inventory layout. Claude reads
+  a preview of your file (all sheets, headers, sample rows) and returns a
+  column-mapping spec; we then apply the mapping locally to the full file.
+  Uses structured outputs + prompt caching to keep token cost low. Bring your
+  own Anthropic API key.
+- **Heuristic fallback**: RVTools `vInfo` sheet, generic inventory Excel/CSV
+  (auto-mapped columns), or hand-built infra list — no AI key required.
 - **Sizing**: right-sizes VMs with a configurable headroom factor against a
   curated Azure VM SKU catalog (D-series / E-series / B-series)
 - **Disks**: maps provisioned storage to Managed Disks (default Premium SSD)
@@ -38,6 +43,21 @@ inventory, pick a region, adjust the landing-zone and Defender toggles, and
 download the BOM.
 
 ## Input formats
+
+### AI parser (recommended — any format)
+
+Toggle **"Use AI parser (Claude Opus 4.7)"** in the sidebar and paste your
+Anthropic API key. Claude inspects every sheet, picks the one that looks like a
+VM inventory, and maps its columns to our normalized schema — including unit
+inference (MiB vs GB, MB vs GB) and powered-off filtering. The file is
+processed locally after the mapping arrives; only a header + row sample is sent
+to the API.
+
+Set the key via `.streamlit/secrets.toml` on Streamlit Cloud:
+
+```toml
+ANTHROPIC_API_KEY = "sk-ant-..."
+```
 
 ### RVTools
 

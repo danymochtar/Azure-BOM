@@ -3,3 +3,5 @@ pandas>=2.2
 openpyxl>=3.1
 requests>=2.32
 xlsxwriter>=3.2
+anthropic>=0.92
+pydantic>=2.7

@@ -24,7 +24,7 @@ from src.output import (
     build_pricing_calculator_import,
     build_pricing_calculator_links,
 )
-from src.parsers import parse_inventory
+from src.parsers import parse_inventory, ai_parse_inventory
 from src.pricing.retail import RetailPricesClient
 
 
@@ -47,6 +47,24 @@ with st.sidebar:
     disk_tier = st.selectbox("Default disk tier", ["Premium SSD", "Standard SSD", "Standard HDD"])
     os_mode = st.radio("OS handling", ["as-detected", "Linux", "Windows"], horizontal=True)
     include_off = st.checkbox("Include powered-off VMs (RVTools)", value=False)
+
+    st.subheader("AI parser")
+    st.caption(
+        "Let Claude read any inventory format — arbitrary column names, "
+        "custom layouts, mixed units. Falls back to the heuristic parser if off."
+    )
+    use_ai = st.checkbox("Use AI parser (Claude Opus 4.7)", value=True)
+    _default_key = ""
+    try:
+        _default_key = st.secrets.get("ANTHROPIC_API_KEY", "")
+    except Exception:
+        pass
+    anthropic_key = st.text_input(
+        "Anthropic API key",
+        type="password",
+        value=_default_key,
+        help="Get one at console.anthropic.com. Can also be set via ANTHROPIC_API_KEY in .streamlit/secrets.toml.",
+    )
 
     st.subheader("Landing zone")
     lz_selected = []
@@ -94,11 +112,40 @@ with col_u2:
 
 items = []
 fmt = None
+ai_mapping = None
+
+
+def _parse_with_fallback(data: bytes, filename: str):
+    """Try AI parser (if enabled + key present); fall back to heuristic on failure."""
+    if use_ai and anthropic_key:
+        try:
+            with st.spinner("Asking Claude to map your inventory columns..."):
+                ai_items, mapping = ai_parse_inventory(
+                    data, filename, anthropic_key, include_powered_off=include_off
+                )
+            st.success(
+                f"AI parsed {len(ai_items)} items from sheet `{mapping.sheet_name}`. "
+                f"Mapped: name=`{mapping.name_col}`, vCPU=`{mapping.vcpu_col}`, "
+                f"memory=`{mapping.memory_col}` ({mapping.memory_unit}), "
+                f"storage=`{mapping.storage_col}` ({mapping.storage_unit})."
+            )
+            if mapping.notes:
+                st.info(f"AI notes: {mapping.notes}")
+            return ai_items, "ai", mapping
+        except Exception as e:
+            st.warning(
+                f"AI parser failed ({e}). Falling back to heuristic parser. "
+                "If your file has unusual columns, try again or check your API key."
+            )
+    its, f = parse_inventory(data, filename, include_powered_off=include_off)
+    return its, f, None
+
 
 if uploaded is not None:
     try:
-        items, fmt = parse_inventory(uploaded.read(), uploaded.name, include_powered_off=include_off)
-        st.success(f"Parsed {len(items)} items from `{uploaded.name}` (format: {fmt}).")
+        items, fmt, ai_mapping = _parse_with_fallback(uploaded.read(), uploaded.name)
+        if fmt != "ai":
+            st.success(f"Parsed {len(items)} items from `{uploaded.name}` (format: {fmt}).")
     except Exception as e:
         st.error(f"Failed to parse file: {e}")
 
@@ -112,6 +159,9 @@ if use_sample:
 
 if items:
     st.subheader("2. Parsed inventory")
+    if ai_mapping is not None:
+        with st.expander("AI column mapping", expanded=False):
+            st.json(ai_mapping.model_dump())
     inv_df = pd.DataFrame([{
         "Name": i.name,
         "vCPU": i.vcpu,
