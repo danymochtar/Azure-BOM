@@ -37,6 +37,7 @@ from src.output import (
 )
 from src.parsers import parse_inventory, ai_parse_inventory, classify
 from src.pricing.retail import RetailPricesClient
+from src import storage
 from src.workloads import (
     AZURE_OPENAI_MODELS,
     FABRIC_CAPACITIES,
@@ -57,37 +58,57 @@ st.caption(
     "Pricing Calculator export template."
 )
 
+# ---------------- Load persisted preferences (browser localStorage) ----------------
+_prefs = storage.load_prefs()
+_saved_api_key = storage.load_api_key()
+
 # ---------------- Sidebar: configuration + AI key ----------------
 with st.sidebar:
     st.header("Configuration")
     app_name = st.text_input(
         "Application / workload name",
-        value="",
+        value=_prefs.get("app_name", ""),
         placeholder="e.g. ERPSuite, FraudAI",
         help="Tagged into 'Custom name' for every BOM line.",
     )
+    _default_region = _prefs.get("region") or DEFAULT_REGION
     region = st.selectbox(
         "Primary region",
         AZURE_REGIONS,
-        index=AZURE_REGIONS.index(DEFAULT_REGION),
+        index=AZURE_REGIONS.index(_default_region) if _default_region in AZURE_REGIONS else AZURE_REGIONS.index(DEFAULT_REGION),
     )
-    currency = st.selectbox("Currency", CURRENCIES, index=CURRENCIES.index(DEFAULT_CURRENCY))
+    _default_currency = _prefs.get("currency") or DEFAULT_CURRENCY
+    currency = st.selectbox(
+        "Currency",
+        CURRENCIES,
+        index=CURRENCIES.index(_default_currency) if _default_currency in CURRENCIES else CURRENCIES.index(DEFAULT_CURRENCY),
+    )
 
     st.subheader("AI key")
-    _default_key = ""
+    _secrets_key = ""
     try:
-        _default_key = st.secrets.get("ANTHROPIC_API_KEY", "")
+        _secrets_key = st.secrets.get("ANTHROPIC_API_KEY", "")
     except Exception:
         pass
     anthropic_key = st.text_input(
         "Anthropic API key",
         type="password",
-        value=_default_key,
+        value=_saved_api_key or _secrets_key,
+        help="Required for classification + AI extraction.",
+    )
+    remember_key = st.checkbox(
+        "Remember key in browser (convenience)",
+        value=bool(_saved_api_key),
         help=(
-            "Required for classification + AI extraction. Keys are held in "
-            "session memory only, never written to disk."
+            "Stores the key in this browser's localStorage so you don't have to "
+            "paste it again. DO NOT enable on shared/public machines — the key "
+            "is readable via DevTools and any browser extension with page access."
         ),
     )
+    if remember_key and anthropic_key and anthropic_key != _saved_api_key:
+        storage.save_api_key(anthropic_key)
+    elif not remember_key and _saved_api_key:
+        storage.clear_api_key()
 
     st.warning(
         "**Data egress notice:** when AI features are enabled, a preview of "
@@ -96,6 +117,20 @@ with st.sidebar:
         "and extraction. Remove sensitive data (passwords, PII) before upload. "
         "Anthropic does not train on API inputs per their terms."
     )
+
+    with st.expander("Browser storage", expanded=False):
+        st.caption(
+            "Non-sensitive preferences (region, strategy, selected components, "
+            "sizing sliders) are auto-saved to your browser so refreshes and "
+            "redeploys don't lose your configuration."
+        )
+        col_s1, col_s2 = st.columns(2)
+        if col_s1.button("Clear saved prefs"):
+            storage.clear_prefs()
+            st.rerun()
+        if col_s2.button("Clear everything", help="Prefs + API key + last result"):
+            storage.clear_all()
+            st.rerun()
 
 # ---------------- Upload ----------------
 st.subheader("1. Upload workload description")
@@ -193,21 +228,28 @@ items: list = []
 if run_vm_flow:
     st.markdown("#### VM inventory")
     col_v1, col_v2 = st.columns(2)
+    _strategy_keys = list(MIGRATION_STRATEGIES.keys())
+    _saved_strategy = _prefs.get("strategy_key", "iaas")
+    _strategy_idx = _strategy_keys.index(_saved_strategy) if _saved_strategy in _strategy_keys else (0 if chosen_type == "vm_inventory" else 1)
     with col_v1:
         strategy_key = st.radio(
             "Migration strategy",
-            list(MIGRATION_STRATEGIES.keys()),
+            _strategy_keys,
             format_func=lambda k: MIGRATION_STRATEGIES[k]["label"],
-            index=0 if chosen_type == "vm_inventory" else 1,
+            index=_strategy_idx,
         )
-        headroom = st.slider("Sizing headroom", 1.0, 2.0, 1.3, step=0.05)
-        disk_tier = st.selectbox("Default disk tier", ["Premium SSD", "Standard SSD", "Standard HDD"])
+        headroom = st.slider("Sizing headroom", 1.0, 2.0, float(_prefs.get("headroom", 1.3)), step=0.05)
+        _disk_opts = ["Premium SSD", "Standard SSD", "Standard HDD"]
+        _saved_disk = _prefs.get("disk_tier", "Premium SSD")
+        disk_tier = st.selectbox("Default disk tier", _disk_opts, index=_disk_opts.index(_saved_disk) if _saved_disk in _disk_opts else 0)
     with col_v2:
-        os_mode = st.radio("OS handling", ["as-detected", "Linux", "Windows"], horizontal=True)
+        _os_opts = ["as-detected", "Linux", "Windows"]
+        _saved_os = _prefs.get("os_mode", "as-detected")
+        os_mode = st.radio("OS handling", _os_opts, index=_os_opts.index(_saved_os) if _saved_os in _os_opts else 0, horizontal=True)
         include_off = st.checkbox("Include powered-off VMs", value=False)
-        include_lz = st.checkbox("Landing Zone", value=True)
-        include_ha = st.checkbox("High Availability", value=False)
-        include_bcdr = st.checkbox("BCDR", value=False)
+        include_lz = st.checkbox("Landing Zone", value=bool(_prefs.get("include_lz", True)))
+        include_ha = st.checkbox("High Availability", value=bool(_prefs.get("include_ha", False)))
+        include_bcdr = st.checkbox("BCDR", value=bool(_prefs.get("include_bcdr", False)))
 
     if include_ha or include_bcdr:
         secondary_options = ["(none — single region)"] + [r for r in AZURE_REGIONS if r != region]
@@ -256,13 +298,18 @@ if run_vm_flow and include_lz:
             "Public IP vs ExpressRoute is typically an either/or for external "
             "connectivity."
         )
+        _saved_lz = set(_prefs.get("lz_selected", []))
         for comp in LANDING_ZONE_COMPONENTS:
-            on = st.checkbox(comp.resource, value=comp.default_enabled, key=f"lz_{comp.key}")
+            default_on = (comp.key in _saved_lz) if _saved_lz else comp.default_enabled
+            on = st.checkbox(comp.resource, value=default_on, key=f"lz_{comp.key}")
             if on:
                 lz_selected.append(comp.key)
-        backup_pct = st.slider("Azure Backup — % of total disk", 0, 200, 40, 5)
+        backup_pct = st.slider("Azure Backup — % of total disk", 0, 200, int(_prefs.get("backup_pct", 40)), 5)
         la_mb_per_vm_per_day = st.number_input(
-            "Log Analytics — MB/day per VM", min_value=0, max_value=5000, value=200, step=50
+            "Log Analytics — MB/day per VM",
+            min_value=0, max_value=5000,
+            value=int(_prefs.get("la_mb_per_vm_per_day", 200)),
+            step=50,
         )
 
 # --- Security checkboxes (shown for VM + SIEM) ---
@@ -270,8 +317,10 @@ sec_enabled: list = []
 sec_manual_counts: dict = {}
 if run_vm_flow or run_siem_flow:
     with st.expander("Security components", expanded=run_siem_flow):
+        _saved_sec = set(_prefs.get("sec_enabled", []))
         for key, meta in SECURITY_COMPONENTS.items():
-            on = st.checkbox(meta["label"], value=meta["default"], key=f"sec_{key}")
+            default_on = (key in _saved_sec) if _saved_sec else meta["default"]
+            on = st.checkbox(meta["label"], value=default_on, key=f"sec_{key}")
             if on:
                 sec_enabled.append(key)
                 if meta.get("scales_with") == "manual":
@@ -429,7 +478,50 @@ if st.button("Run Azure Cost Assessment", type="primary"):
         st.session_state["currency"] = currency
         st.session_state["app_name"] = app_name
 
+        # Auto-save preferences to browser localStorage
+        storage.save_prefs({
+            "app_name": app_name,
+            "region": region,
+            "currency": currency,
+            "strategy_key": locals().get("strategy_key", "iaas"),
+            "include_lz": include_lz,
+            "include_ha": include_ha,
+            "include_bcdr": include_bcdr,
+            "lz_selected": lz_selected,
+            "sec_enabled": sec_enabled,
+            "backup_pct": backup_pct,
+            "la_mb_per_vm_per_day": la_mb_per_vm_per_day,
+            "headroom": locals().get("headroom", 1.3),
+            "disk_tier": locals().get("disk_tier", "Premium SSD"),
+            "os_mode": locals().get("os_mode", "as-detected"),
+        })
+        # Persist the full result so a browser refresh can restore it
+        storage.save_last_bom({
+            "lines": [l.to_row() for l in all_lines],
+            "mapping_rows": mapping_rows,
+            "region": region,
+            "currency": currency,
+            "app_name": app_name,
+        })
+
 # ---------------- Results ----------------
+# Offer to restore the last assessment if nothing is in session state yet
+if "bom_lines" not in st.session_state:
+    _last = storage.load_last_bom()
+    if _last and _last.get("lines"):
+        from src.models import BomLine
+        st.info(
+            f"Last saved assessment available ({len(_last['lines'])} line items, "
+            f"region {_last.get('region')}, app `{_last.get('app_name') or '—'}`)."
+        )
+        if st.button("Restore last assessment from browser storage"):
+            st.session_state["bom_lines"] = [BomLine(**row) for row in _last["lines"]]
+            st.session_state["mapping_rows"] = _last.get("mapping_rows", [])
+            st.session_state["region"] = _last.get("region", "")
+            st.session_state["currency"] = _last.get("currency", "USD")
+            st.session_state["app_name"] = _last.get("app_name", "")
+            st.rerun()
+
 if "bom_lines" in st.session_state:
     lines = st.session_state["bom_lines"]
     mapping_rows = st.session_state["mapping_rows"]
