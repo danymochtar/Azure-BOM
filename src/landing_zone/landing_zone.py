@@ -107,6 +107,38 @@ LANDING_ZONE_COMPONENTS: List[LzComponent] = [
         ),
     ),
     LzComponent(
+        key="bandwidth_egress",
+        category="Networking",
+        resource="Bandwidth egress (outbound, standard tier)",
+        default_enabled=True,
+        quantity=200.0,
+        unit="GB",
+        # Bandwidth is zone-priced in the retail feed; armRegionName is
+        # typically empty/"Global", so we deliberately don't filter by region.
+        build_filter=lambda region: (
+            "serviceName eq 'Bandwidth' and priceType eq 'Consumption'"
+        ),
+        pick=lambda records: (
+            _cheapest([
+                r for r in records
+                if "data transfer out" in r.meter_name.lower()
+                and "standard" in (r.meter_name + r.product_name).lower()
+                and "free" not in r.meter_name.lower()
+            ])
+            or _cheapest([
+                r for r in records
+                if "data transfer out" in r.meter_name.lower()
+                and "free" not in r.meter_name.lower()
+            ])
+            or _cheapest(records)
+        ),
+        notes=(
+            "Outbound data transfer (egress). First 100 GB/month are free per "
+            "subscription — set the quantity to the expected monthly egress "
+            "ABOVE the free tier. Typical for small/mid workloads: 100-500 GB/mo."
+        ),
+    ),
+    LzComponent(
         key="app_gateway_waf",
         category="Networking",
         resource="Application Gateway WAF v2 (1 instance)",

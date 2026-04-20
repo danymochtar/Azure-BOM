@@ -94,6 +94,7 @@ DEFAULT_PREFS: dict = {
     "sec_enabled": [],
     "backup_pct": 40,
     "la_mb_per_vm_per_day": 200,
+    "bandwidth_gb": 200,
     "headroom": 1.3,
     "disk_tier": "Premium SSD",
     "os_mode": "as-detected",

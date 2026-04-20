@@ -4,13 +4,22 @@ Docs: https://learn.microsoft.com/rest/api/cost-management/retail-prices/azure-r
 
 No authentication required. Results are paginated via NextPageLink. We cache
 results per OData filter to avoid repeated calls within a session.
+
+Regional fallback: if an armRegionName-scoped filter returns zero records
+and that region has a fallback mapping (e.g. malaysiacentral -> southeastasia),
+the client transparently re-queries against the fallback region. The set
+`fallbacks_used` records which primary→fallback swaps happened so the UI
+can surface them to the user.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 import requests
+
+from ..constants import REGION_FALLBACKS
 
 
 ENDPOINT = "https://prices.azure.com/api/retail/prices"
@@ -65,12 +74,41 @@ class RetailPricesClient:
         self.session = requests.Session()
         self._cache: Dict[str, List[PriceRecord]] = {}
         self._last_error: Optional[str] = None
+        # Record (primary, fallback) pairs when the fallback was used so the
+        # UI can inform the user that e.g. Malaysia prices came from SEA.
+        self.fallbacks_used: Set[Tuple[str, str]] = set()
 
     def query(self, odata_filter: str, max_pages: int = 3) -> List[PriceRecord]:
+        """Query retail prices; transparently falls back to an alternate
+        region if the primary returns empty and a fallback is mapped."""
         key = f"{self.currency}|{odata_filter}|{max_pages}"
         if key in self._cache:
             return self._cache[key]
 
+        results = self._query_raw(odata_filter, max_pages)
+
+        # Regional fallback: if filter names a region with a fallback mapping
+        # and the primary returned nothing, retry against the fallback(s).
+        if not results:
+            m = re.search(r"armRegionName\s+eq\s+'([a-z0-9]+)'", odata_filter, re.IGNORECASE)
+            if m:
+                primary = m.group(1).lower()
+                for fallback in REGION_FALLBACKS.get(primary, []):
+                    alt_filter = odata_filter.replace(
+                        f"armRegionName eq '{primary}'",
+                        f"armRegionName eq '{fallback}'",
+                    )
+                    alt = self._query_raw(alt_filter, max_pages)
+                    if alt:
+                        self.fallbacks_used.add((primary, fallback))
+                        self._cache[key] = alt
+                        return alt
+
+        self._cache[key] = results
+        return results
+
+    def _query_raw(self, odata_filter: str, max_pages: int = 3) -> List[PriceRecord]:
+        """Single-region query without fallback logic."""
         params = {"currencyCode": self.currency, "$filter": odata_filter}
         url: Optional[str] = ENDPOINT
         results: List[PriceRecord] = []
@@ -88,12 +126,8 @@ class RetailPricesClient:
                 url = data.get("NextPageLink") or None
                 pages += 1
         except requests.RequestException as exc:
-            # Cache the empty result so repeated lookups don't keep retrying
-            # inside a single session; caller gets "(price not found)" lines.
             self._last_error = f"Retail Prices API error for filter '{odata_filter}': {exc}"
-            self._cache[key] = []
             return []
-        self._cache[key] = results
         return results
 
     # ---------- Convenience lookups ----------

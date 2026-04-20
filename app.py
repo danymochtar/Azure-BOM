@@ -292,6 +292,7 @@ lz_selected: list = []
 lz_overrides: dict = {}
 backup_pct = 40
 la_mb_per_vm_per_day = 200
+bandwidth_gb = 200
 if run_vm_flow and include_lz:
     with st.expander("Landing zone components (tick what to include)", expanded=True):
         st.caption(
@@ -310,6 +311,18 @@ if run_vm_flow and include_lz:
             min_value=0, max_value=5000,
             value=int(_prefs.get("la_mb_per_vm_per_day", 200)),
             step=50,
+        )
+        bandwidth_gb = st.number_input(
+            "Bandwidth egress — GB/month (above the free 100 GB tier)",
+            min_value=0, max_value=1_000_000,
+            value=int(_prefs.get("bandwidth_gb", 200)),
+            step=50,
+            help=(
+                "Monthly outbound data transfer you expect ABOVE the free 100 "
+                "GB/month tier. Rough guide: web/API workloads serving users "
+                "inside the region often fit in 100-500 GB/mo; global egress "
+                "or media delivery can reach many TB."
+            ),
         )
 
 # --- Security checkboxes (shown for VM + SIEM) ---
@@ -412,6 +425,7 @@ if st.button("Run Azure Cost Assessment", type="primary"):
             la_gb = round(la_mb_per_vm_per_day * vm_count * 30 / 1024.0, 2)
             lz_overrides["recovery_vault"] = backup_gb
             lz_overrides["log_analytics"] = la_gb
+            lz_overrides["bandwidth_egress"] = float(bandwidth_gb)
 
             if include_lz and lz_selected:
                 all_lines.extend(
@@ -466,6 +480,14 @@ if st.button("Run Azure Cost Assessment", type="primary"):
                 )
             )
 
+    if getattr(client, "fallbacks_used", None):
+        pairs = ", ".join(f"{p}→{f}" for p, f in sorted(client.fallbacks_used))
+        st.info(
+            f"Some services had no retail prices in your primary region. "
+            f"Prices for those lines came from the fallback region(s): {pairs}. "
+            "Deploy-to-region remains your primary selection; only the pricing "
+            "lookup was redirected."
+        )
     if getattr(client, "_last_error", None):
         st.warning(f"Retail Prices API had issues: {client._last_error}")
 
@@ -491,6 +513,7 @@ if st.button("Run Azure Cost Assessment", type="primary"):
             "sec_enabled": sec_enabled,
             "backup_pct": backup_pct,
             "la_mb_per_vm_per_day": la_mb_per_vm_per_day,
+            "bandwidth_gb": bandwidth_gb,
             "headroom": locals().get("headroom", 1.3),
             "disk_tier": locals().get("disk_tier", "Premium SSD"),
             "os_mode": locals().get("os_mode", "as-detected"),
