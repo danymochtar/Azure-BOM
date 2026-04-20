@@ -510,16 +510,20 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
             _saved_tier = sugg_ais.get("tier", "none")
             _tier_idx = _tier_keys.index(_saved_tier) if _saved_tier in _tier_keys else 0
             tier = st.selectbox(
-                "Service tier", _tier_keys,
+                "Service tier", _tier_keys, key="aisearch_tier",
                 index=_tier_idx,
                 format_func=lambda k: "None" if k == "none" else AI_SEARCH_TIERS[k]["label"],
             )
         with c2:
-            replicas = st.number_input("Replicas", min_value=0, value=int(sugg_ais.get("replicas", 0)),
-                                        step=1, disabled=(tier == "none"))
+            replicas = st.number_input(
+                "Replicas", min_value=0, value=int(sugg_ais.get("replicas", 0)),
+                step=1, disabled=(tier == "none"), key="aisearch_replicas",
+            )
         with c3:
-            partitions = st.number_input("Partitions", min_value=0, value=int(sugg_ais.get("partitions", 0)),
-                                          step=1, disabled=(tier == "none"))
+            partitions = st.number_input(
+                "Partitions", min_value=0, value=int(sugg_ais.get("partitions", 0)),
+                step=1, disabled=(tier == "none"), key="aisearch_partitions",
+            )
 
     # -- GPU VMs --
     sugg_gpu = prefs.get("gpu_vm", {}) or {}
@@ -530,17 +534,23 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
             _saved_gpu = sugg_gpu.get("sku", "none")
             _gpu_idx = _gpu_keys.index(_saved_gpu) if _saved_gpu in _gpu_keys else 0
             gpu_sku = st.selectbox(
-                "GPU SKU", _gpu_keys, index=_gpu_idx,
+                "GPU SKU", _gpu_keys, index=_gpu_idx, key="gpu_sku",
                 format_func=lambda k: "None" if k == "none" else GPU_VM_SKUS[k],
             )
         with c2:
-            gpu_count = st.number_input("Instances", min_value=0, value=int(sugg_gpu.get("count", 0)),
-                                          step=1, disabled=(gpu_sku == "none"))
+            gpu_count = st.number_input(
+                "Instances", min_value=0, value=int(sugg_gpu.get("count", 0)),
+                step=1, disabled=(gpu_sku == "none"), key="gpu_count",
+            )
         with c3:
-            gpu_hours = st.number_input("Hours/month", min_value=0.0, value=float(sugg_gpu.get("hours", 0.0)),
-                                          step=10.0, disabled=(gpu_sku == "none"))
+            gpu_hours = st.number_input(
+                "Hours/month", min_value=0.0, value=float(sugg_gpu.get("hours", 0.0)),
+                step=10.0, disabled=(gpu_sku == "none"), key="gpu_hours",
+            )
         with c4:
-            gpu_os = st.selectbox("OS", ["Linux", "Windows"], disabled=(gpu_sku == "none"))
+            gpu_os = st.selectbox(
+                "OS", ["Linux", "Windows"], disabled=(gpu_sku == "none"), key="gpu_os",
+            )
 
     # -- Fine-tuning --
     sugg_ft = prefs.get("finetune", {}) or {}
@@ -551,13 +561,15 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
             _saved_ft = sugg_ft.get("model", "none")
             _ft_idx = _ft_keys.index(_saved_ft) if _saved_ft in _ft_keys else 0
             ft_model = st.selectbox(
-                "Base model", _ft_keys, index=_ft_idx,
+                "Base model", _ft_keys, index=_ft_idx, key="ft_model",
                 format_func=lambda k: "None" if k == "none" else AZURE_OPENAI_MODELS[k].label,
             )
         with c2:
-            ft_tokens = st.number_input("Training tokens (1K)", min_value=0.0,
-                                          value=float(sugg_ft.get("tokens_1k", 0.0)),
-                                          step=100.0, disabled=(ft_model == "none"))
+            ft_tokens = st.number_input(
+                "Training tokens (1K)", min_value=0.0,
+                value=float(sugg_ft.get("tokens_1k", 0.0)),
+                step=100.0, disabled=(ft_model == "none"), key="ft_tokens",
+            )
 
     # -- Cognitive Services --
     sugg_cog = prefs.get("cognitive", {}) or {}

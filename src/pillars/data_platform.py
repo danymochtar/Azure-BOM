@@ -814,87 +814,114 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
         with c1:
             _fabric_opts = ["(none)"] + FABRIC_CAPACITIES
             _saved_f = prefs.get("fabric_sku") or "(none)"
-            fabric_sku = st.selectbox("Fabric capacity", _fabric_opts,
-                                       index=_sel_idx(_fabric_opts, _saved_f))
+            fabric_sku = st.selectbox(
+                "Fabric capacity", _fabric_opts, key="fabric_sku",
+                index=_sel_idx(_fabric_opts, _saved_f),
+            )
             fabric_sku = None if fabric_sku == "(none)" else fabric_sku
         with c2:
-            cosmos_ru = st.number_input("Cosmos DB RU/s", min_value=0,
-                                          value=int(prefs.get("cosmos_ru_per_second", 0)), step=400)
+            cosmos_ru = st.number_input(
+                "Cosmos DB RU/s", min_value=0,
+                value=int(prefs.get("cosmos_ru_per_second", 0)), step=400,
+                key="cosmos_ru",
+            )
         with c3:
-            synapse_dwu = st.number_input("Synapse Dedicated SQL Pool DWU", min_value=0,
-                                            value=int(prefs.get("synapse_dwu", 0)), step=100)
+            synapse_dwu = st.number_input(
+                "Synapse Dedicated SQL Pool DWU", min_value=0,
+                value=int(prefs.get("synapse_dwu", 0)), step=100,
+                key="synapse_dwu",
+            )
 
     with st.expander("Azure SQL Database", expanded=False):
         c1, c2, c3, c4 = st.columns(4)
         with c1:
             _sql_opts = ["none"] + list(AZURE_SQL_DB_TIERS.keys())
             sql_tier = st.selectbox(
-                "Service tier", _sql_opts,
+                "Service tier", _sql_opts, key="sqldb_tier",
                 index=_sel_idx(_sql_opts, sql_pref.get("tier", "none")),
                 format_func=lambda k: "None" if k == "none" else AZURE_SQL_DB_TIERS[k].split(" (")[0],
             )
         with c2:
-            sql_vcores = st.number_input("vCores", min_value=0, value=int(sql_pref.get("vcores", 0)),
-                                          step=2, disabled=(sql_tier == "none"))
+            sql_vcores = st.number_input(
+                "vCores", min_value=0, value=int(sql_pref.get("vcores", 0)),
+                step=2, disabled=(sql_tier == "none"), key="sqldb_vcores",
+            )
         with c3:
-            sql_storage = st.number_input("Storage GB", min_value=0, value=int(sql_pref.get("storage_gb", 0)),
-                                            step=50, disabled=(sql_tier == "none"))
+            sql_storage = st.number_input(
+                "Storage GB", min_value=0, value=int(sql_pref.get("storage_gb", 0)),
+                step=50, disabled=(sql_tier == "none"), key="sqldb_storage",
+            )
         with c4:
-            sql_zr = st.checkbox("Zone-redundant", value=bool(sql_pref.get("zone_redundant", False)),
-                                  disabled=(sql_tier == "none"))
+            sql_zr = st.checkbox(
+                "Zone-redundant", value=bool(sql_pref.get("zone_redundant", False)),
+                disabled=(sql_tier == "none"), key="sqldb_zr",
+            )
 
     with st.expander("ADLS Gen2 (Data Lake Storage)", expanded=False):
         c1, c2, c3 = st.columns(3)
         with c1:
             _adls_opts = ["none"] + list(ADLS_TIERS.keys())
             adls_tier = st.selectbox(
-                "Tier", _adls_opts,
+                "Tier", _adls_opts, key="adls_tier",
                 index=_sel_idx(_adls_opts, adls_pref.get("tier", "none")),
                 format_func=lambda k: "None" if k == "none" else ADLS_TIERS[k],
             )
         with c2:
             _red_opts = list(ADLS_REDUNDANCY.keys())
             adls_redundancy = st.selectbox(
-                "Redundancy", _red_opts,
+                "Redundancy", _red_opts, key="adls_redundancy",
                 index=_sel_idx(_red_opts, adls_pref.get("redundancy", "LRS")),
                 format_func=lambda k: ADLS_REDUNDANCY[k],
                 disabled=(adls_tier == "none"),
             )
         with c3:
-            adls_gb = st.number_input("Storage GB", min_value=0, value=int(adls_pref.get("storage_gb", 0)),
-                                        step=1000, disabled=(adls_tier == "none"))
+            adls_gb = st.number_input(
+                "Storage GB", min_value=0, value=int(adls_pref.get("storage_gb", 0)),
+                step=1000, disabled=(adls_tier == "none"), key="adls_gb",
+            )
 
     with st.expander("Azure Data Factory", expanded=False):
         c1, c2, c3 = st.columns(3)
         with c1:
-            adf_runs = st.number_input("Activity runs / month", min_value=0,
-                                         value=int(adf_pref.get("pipeline_runs", 0)), step=1000)
+            adf_runs = st.number_input(
+                "Activity runs / month", min_value=0,
+                value=int(adf_pref.get("pipeline_runs", 0)), step=1000,
+                key="adf_runs",
+            )
         with c2:
-            adf_diu = st.number_input("Data movement DIU-hours / month", min_value=0.0,
-                                        value=float(adf_pref.get("diu_hours", 0.0)), step=5.0)
+            adf_diu = st.number_input(
+                "Data movement DIU-hours / month", min_value=0.0,
+                value=float(adf_pref.get("diu_hours", 0.0)), step=5.0,
+                key="adf_diu",
+            )
         with c3:
-            adf_ssis = st.number_input("SSIS IR hours / month", min_value=0.0,
-                                         value=float(adf_pref.get("ssis_ir_hours", 0.0)), step=10.0)
+            adf_ssis = st.number_input(
+                "SSIS IR hours / month", min_value=0.0,
+                value=float(adf_pref.get("ssis_ir_hours", 0.0)), step=10.0,
+                key="adf_ssis",
+            )
 
     with st.expander("Event Hubs", expanded=False):
         c1, c2 = st.columns(2)
         with c1:
             _eh_opts = ["none"] + list(EVENT_HUBS_TIERS.keys())
             eh_tier = st.selectbox(
-                "Tier", _eh_opts,
+                "Tier", _eh_opts, key="eh_tier",
                 index=_sel_idx(_eh_opts, eh_pref.get("tier", "none")),
                 format_func=lambda k: "None" if k == "none" else EVENT_HUBS_TIERS[k],
             )
         with c2:
-            eh_units = st.number_input("Units", min_value=0, value=int(eh_pref.get("units", 0)),
-                                        step=1, disabled=(eh_tier == "none"))
+            eh_units = st.number_input(
+                "Units", min_value=0, value=int(eh_pref.get("units", 0)),
+                step=1, disabled=(eh_tier == "none"), key="eh_units",
+            )
 
     with st.expander("Azure Databricks", expanded=False):
         c1, c2 = st.columns(2)
         with c1:
             _db_opts = ["none"] + list(DATABRICKS_TIERS.keys())
             db_tier = st.selectbox(
-                "Workspace tier", _db_opts,
+                "Workspace tier", _db_opts, key="db_tier",
                 index=_sel_idx(_db_opts, db_pref.get("tier", "none")),
                 format_func=lambda k: "None" if k == "none" else DATABRICKS_TIERS[k]["label"],
             )
@@ -902,7 +929,7 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
             db_dbu = st.number_input(
                 "DBU-hours / month", min_value=0.0,
                 value=float(db_pref.get("dbu_hours", 0.0)), step=100.0,
-                disabled=(db_tier == "none"),
+                disabled=(db_tier == "none"), key="db_dbu",
                 help="1 DBU ≈ 1 hour of a single-core worker on Standard. A small cluster of 4 nodes × 8hrs/day × 22 days ≈ 700 DBU.",
             )
 
@@ -910,13 +937,14 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
         synapse_serverless_tb = st.number_input(
             "TB scanned / month", min_value=0.0,
             value=float(ss_pref.get("tb_per_month", 0.0)), step=0.5,
+            key="synapse_serverless_tb",
             help="Serverless SQL pool charges ~$5/TB scanned. Great for ad-hoc on ADLS.",
         )
 
     with st.expander("Microsoft Fabric / Power BI Embedded capacity", expanded=False):
         _pbi_opts = ["none"] + list(POWER_BI_CAPACITIES.keys())
         pbi_sku = st.selectbox(
-            "Capacity SKU", _pbi_opts,
+            "Capacity SKU", _pbi_opts, key="pbi_sku",
             index=_sel_idx(_pbi_opts, pbi_pref.get("sku", "none")),
             format_func=lambda k: "None" if k == "none" else POWER_BI_CAPACITIES[k],
             help="F-SKUs route through Microsoft Fabric; P and A SKUs route through Power BI Embedded.",
@@ -927,14 +955,16 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
         with c1:
             _adx_opts = ["none"] + list(ADX_SKUS.keys())
             adx_sku = st.selectbox(
-                "Cluster SKU", _adx_opts,
+                "Cluster SKU", _adx_opts, key="adx_sku",
                 index=_sel_idx(_adx_opts, adx_pref.get("sku", "none")),
                 format_func=lambda k: "None" if k == "none" else ADX_SKUS[k],
             )
         with c2:
-            adx_count = st.number_input("Instance count", min_value=0,
-                                         value=int(adx_pref.get("count", 0)), step=1,
-                                         disabled=(adx_sku == "none"))
+            adx_count = st.number_input(
+                "Instance count", min_value=0,
+                value=int(adx_pref.get("count", 0)), step=1,
+                disabled=(adx_sku == "none"), key="adx_count",
+            )
 
     with st.expander("Cosmos DB Serverless (per-RU billing)", expanded=False):
         c1, c2 = st.columns(2)
@@ -942,13 +972,14 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
             cosmos_sl_ru = st.number_input(
                 "Request Units / month", min_value=0,
                 value=int(cosmos_sl_pref.get("request_units_month", 0)),
-                step=1_000_000,
+                step=1_000_000, key="cosmos_sl_ru",
                 help="Serverless: ~$0.25 per million RU consumed. Use provisioned above for sustained throughput.",
             )
         with c2:
             cosmos_sl_storage = st.number_input(
                 "Cosmos storage GB", min_value=0.0,
                 value=float(cosmos_sl_pref.get("storage_gb", 0.0)), step=10.0,
+                key="cosmos_sl_storage",
             )
 
     # --- Azure SQL Managed Instance ---
@@ -958,19 +989,19 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
         with c1:
             _mi_opts = ["none"] + list(SQL_MI_TIERS.keys())
             mi_tier = st.selectbox(
-                "Tier", _mi_opts,
+                "Tier", _mi_opts, key="mi_tier",
                 index=_sel_idx(_mi_opts, mi_pref.get("tier", "none")),
                 format_func=lambda k: "None" if k == "none" else SQL_MI_TIERS[k],
             )
         with c2:
             mi_vcores = st.number_input(
                 "vCores", min_value=0, value=int(mi_pref.get("vcores", 0)),
-                step=4, disabled=(mi_tier == "none"),
+                step=4, disabled=(mi_tier == "none"), key="mi_vcores",
             )
         with c3:
             mi_storage = st.number_input(
                 "Storage GB", min_value=0, value=int(mi_pref.get("storage_gb", 0)),
-                step=50, disabled=(mi_tier == "none"),
+                step=50, disabled=(mi_tier == "none"), key="mi_storage",
             )
 
     # --- PostgreSQL Flexible ---
@@ -1034,7 +1065,7 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
         with c1:
             _r_opts = ["none"] + list(REDIS_TIERS.keys())
             redis_tier = st.selectbox(
-                "Tier", _r_opts,
+                "Tier", _r_opts, key="redis_tier",
                 index=_sel_idx(_r_opts, redis_pref.get("tier", "none")),
                 format_func=lambda k: "None" if k == "none" else REDIS_TIERS[k]["label"],
             )
@@ -1042,7 +1073,7 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
             redis_sku = st.text_input(
                 "SKU / size (e.g. C1, P2, E10)",
                 value=str(redis_pref.get("sku", "")),
-                disabled=(redis_tier == "none"),
+                disabled=(redis_tier == "none"), key="redis_sku",
                 help="Basic/Standard use C0-C6. Premium uses P1-P5. Enterprise uses E10/E20/.../E400.",
             )
 
@@ -1053,14 +1084,14 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
         with c1:
             _f_opts = ["none"] + list(AZURE_FILES_TIERS.keys())
             files_tier = st.selectbox(
-                "Tier", _f_opts,
+                "Tier", _f_opts, key="files_tier",
                 index=_sel_idx(_f_opts, files_pref.get("tier", "none")),
                 format_func=lambda k: "None" if k == "none" else AZURE_FILES_TIERS[k]["label"],
             )
         with c2:
             files_gb = st.number_input(
                 "Provisioned GB", min_value=0, value=int(files_pref.get("storage_gb", 0)),
-                step=100, disabled=(files_tier == "none"),
+                step=100, disabled=(files_tier == "none"), key="files_gb",
             )
 
     return {

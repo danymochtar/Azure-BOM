@@ -369,95 +369,123 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
         with c1:
             _app_opts = ["none"] + list(APP_SERVICE_SKUS)
             appsvc_sku = st.selectbox(
-                "Plan SKU", _app_opts,
+                "Plan SKU", _app_opts, key="appsvc_sku",
                 index=_sel_idx(_app_opts, asvc_pref.get("sku", "none")),
                 format_func=lambda k: "None" if k == "none" else APP_SERVICE_SKUS[k],
             )
         with c2:
-            appsvc_count = st.number_input("Instance count", min_value=0,
-                                             value=int(asvc_pref.get("count", 0)), step=1,
-                                             disabled=(appsvc_sku == "none"))
+            appsvc_count = st.number_input(
+                "Instance count", min_value=0,
+                value=int(asvc_pref.get("count", 0)), step=1,
+                disabled=(appsvc_sku == "none"), key="appsvc_count",
+            )
         with c3:
             _os_opts = ["Linux", "Windows"]
             _os_saved = "Windows" if asvc_pref.get("os_windows") else "Linux"
-            appsvc_os = st.selectbox("OS", _os_opts, index=_sel_idx(_os_opts, _os_saved),
-                                       disabled=(appsvc_sku == "none"))
+            appsvc_os = st.selectbox(
+                "OS", _os_opts, index=_sel_idx(_os_opts, _os_saved),
+                disabled=(appsvc_sku == "none"), key="appsvc_os",
+            )
 
     with st.expander("AKS node pool", expanded=False):
         c1, c2, c3 = st.columns(3)
         with c1:
-            aks_pool_name = st.text_input("Pool name", value=str(aks_pref.get("pool_name", "default")))
+            aks_pool_name = st.text_input(
+                "Pool name", value=str(aks_pref.get("pool_name", "default")),
+                key="aks_pool_name",
+            )
         with c2:
             _aks_opts = ["none"] + list(AKS_NODE_SKUS)
             aks_sku = st.selectbox(
-                "Node VM SKU", _aks_opts,
+                "Node VM SKU", _aks_opts, key="aks_sku",
                 index=_sel_idx(_aks_opts, aks_pref.get("sku", "none")),
                 format_func=lambda k: "None" if k == "none" else AKS_NODE_SKUS[k],
             )
         with c3:
-            aks_count = st.number_input("Node count", min_value=0, value=int(aks_pref.get("count", 0)),
-                                          step=1, disabled=(aks_sku == "none"))
+            aks_count = st.number_input(
+                "Node count", min_value=0, value=int(aks_pref.get("count", 0)),
+                step=1, disabled=(aks_sku == "none"), key="aks_count",
+            )
         c4, c5 = st.columns(2)
         with c4:
             _aks_os_saved = "Windows" if aks_pref.get("os_windows") else "Linux"
-            aks_os = st.selectbox("Node OS", ["Linux", "Windows"],
-                                    index=_sel_idx(["Linux", "Windows"], _aks_os_saved),
-                                    disabled=(aks_sku == "none"))
+            aks_os = st.selectbox(
+                "Node OS", ["Linux", "Windows"],
+                index=_sel_idx(["Linux", "Windows"], _aks_os_saved),
+                disabled=(aks_sku == "none"), key="aks_os",
+            )
         with c5:
-            aks_uptime = st.checkbox("Uptime SLA", value=bool(aks_pref.get("uptime_sla", False)),
-                                       disabled=(aks_sku == "none"))
+            aks_uptime = st.checkbox(
+                "Uptime SLA", value=bool(aks_pref.get("uptime_sla", False)),
+                disabled=(aks_sku == "none"), key="aks_uptime",
+            )
 
     with st.expander("Azure Container Registry", expanded=False):
         c1, c2 = st.columns(2)
         with c1:
             _acr_opts = ["none"] + list(ACR_SKUS)
             acr_sku = st.selectbox(
-                "SKU", _acr_opts,
+                "SKU", _acr_opts, key="acr_sku",
                 index=_sel_idx(_acr_opts, acr_pref.get("sku", "none")),
                 format_func=lambda k: "None" if k == "none" else ACR_SKUS[k],
             )
         with c2:
-            acr_geo = st.number_input("Geo-replica regions (Premium only)", min_value=1,
-                                        value=int(acr_pref.get("geo_replica_count", 1)), step=1,
-                                        disabled=(acr_sku != "Premium"))
+            acr_geo = st.number_input(
+                "Geo-replica regions (Premium only)", min_value=1,
+                value=int(acr_pref.get("geo_replica_count", 1)), step=1,
+                disabled=(acr_sku != "Premium"), key="acr_geo",
+            )
 
     with st.expander("Azure Container Apps", expanded=False):
         c1, c2, c3 = st.columns(3)
         with c1:
-            aca_vcpu = st.number_input("vCPU-seconds / month", min_value=0.0,
-                                         value=float(aca_pref.get("vcpu_seconds", 0.0)), step=100_000.0)
+            aca_vcpu = st.number_input(
+                "vCPU-seconds / month", min_value=0.0,
+                value=float(aca_pref.get("vcpu_seconds", 0.0)), step=100_000.0,
+                key="aca_vcpu",
+            )
         with c2:
-            aca_mem = st.number_input("Memory GiB-seconds / month", min_value=0.0,
-                                        value=float(aca_pref.get("mem_gib_seconds", 0.0)), step=100_000.0)
+            aca_mem = st.number_input(
+                "Memory GiB-seconds / month", min_value=0.0,
+                value=float(aca_pref.get("mem_gib_seconds", 0.0)), step=100_000.0,
+                key="aca_mem",
+            )
         with c3:
-            aca_req = st.number_input("Requests (millions / month)", min_value=0.0,
-                                        value=float(aca_pref.get("request_millions", 0.0)), step=1.0)
+            aca_req = st.number_input(
+                "Requests (millions / month)", min_value=0.0,
+                value=float(aca_pref.get("request_millions", 0.0)), step=1.0,
+                key="aca_req",
+            )
 
     with st.expander("API Management", expanded=False):
         c1, c2 = st.columns(2)
         with c1:
             _apim_opts = ["none"] + list(APIM_TIERS)
             apim_tier = st.selectbox(
-                "Tier", _apim_opts,
+                "Tier", _apim_opts, key="apim_tier",
                 index=_sel_idx(_apim_opts, apim_pref.get("tier", "none")),
                 format_func=lambda k: "None" if k == "none" else APIM_TIERS[k],
             )
         with c2:
-            apim_units = st.number_input("Units", min_value=0, value=int(apim_pref.get("units", 0)),
-                                           step=1, disabled=(apim_tier == "none"))
+            apim_units = st.number_input(
+                "Units", min_value=0, value=int(apim_pref.get("units", 0)),
+                step=1, disabled=(apim_tier == "none"), key="apim_units",
+            )
 
     with st.expander("Azure Front Door", expanded=False):
         c1, c2 = st.columns(2)
         with c1:
             _fd_opts = ["none"] + list(FRONT_DOOR_TIERS)
             fd_tier = st.selectbox(
-                "Tier", _fd_opts,
+                "Tier", _fd_opts, key="fd_tier",
                 index=_sel_idx(_fd_opts, fd_pref.get("tier", "none")),
                 format_func=lambda k: "None" if k == "none" else FRONT_DOOR_TIERS[k],
             )
         with c2:
-            fd_routes = st.number_input("Routes (info)", min_value=0, value=int(fd_pref.get("routes", 0)),
-                                          step=1, disabled=(fd_tier == "none"))
+            fd_routes = st.number_input(
+                "Routes (info)", min_value=0, value=int(fd_pref.get("routes", 0)),
+                step=1, disabled=(fd_tier == "none"), key="fd_routes",
+            )
 
     sb_pref = prefs.get("service_bus", {}) or {}
     with st.expander("Azure Service Bus", expanded=False):
@@ -465,14 +493,14 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
         with c1:
             _sb_opts = ["none"] + list(SERVICE_BUS_TIERS)
             sb_tier = st.selectbox(
-                "Tier", _sb_opts,
+                "Tier", _sb_opts, key="sb_tier",
                 index=_sel_idx(_sb_opts, sb_pref.get("tier", "none")),
                 format_func=lambda k: "None" if k == "none" else SERVICE_BUS_TIERS[k]["label"],
             )
         with c2:
             sb_units = st.number_input(
                 "Namespaces / MUs", min_value=0, value=int(sb_pref.get("units", 0)),
-                step=1, disabled=(sb_tier == "none"),
+                step=1, disabled=(sb_tier == "none"), key="sb_units",
                 help="Basic/Standard: count of namespaces. Premium: messaging units (1/2/4).",
             )
 
