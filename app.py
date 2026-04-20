@@ -14,11 +14,11 @@ import streamlit as st
 from src.analysis import build_compute_bom, aggregate_vm_count
 from src.architecture import (
     MIGRATION_STRATEGIES,
-    SECURITY_TIERS,
+    SECURITY_COMPONENTS,
     apply_ha_multiplier,
     build_bcdr_bom,
     build_ha_bom,
-    build_security_tier_bom,
+    build_security_bom,
     strategy_guidance,
 )
 from src.constants import AZURE_REGIONS, CURRENCIES, DEFAULT_REGION, DEFAULT_CURRENCY
@@ -76,13 +76,6 @@ with st.sidebar:
         "BCDR (Azure Site Recovery + replicated backup)",
         value=False,
     )
-    security_tier = st.radio(
-        "Security tier",
-        list(SECURITY_TIERS.keys()),
-        format_func=lambda k: SECURITY_TIERS[k]["label"],
-        index=1,
-    )
-    st.caption(SECURITY_TIERS[security_tier]["description"])
 
     # Secondary region only makes sense with HA or BCDR
     secondary_region = None
@@ -96,6 +89,24 @@ with st.sidebar:
         )
         if not sec_pick.startswith("(none"):
             secondary_region = sec_pick
+
+    st.subheader("Security components")
+    st.caption("Tick the Defender plans / security services you want priced. Each is independent.")
+    sec_enabled: list[str] = []
+    sec_manual_counts: dict[str, float] = {}
+    for key, meta in SECURITY_COMPONENTS.items():
+        on = st.checkbox(meta["label"], value=meta["default"], key=f"sec_{key}")
+        if on:
+            sec_enabled.append(key)
+            if meta.get("scales_with") == "manual":
+                defender_key = meta.get("defender_plan", key)
+                sec_manual_counts[defender_key] = st.number_input(
+                    meta.get("unit_prompt", "Count"),
+                    min_value=0.0,
+                    value=0.0,
+                    key=f"sec_qty_{key}",
+                )
+            st.caption(meta["notes"])
 
     st.subheader("Landing zone components")
     st.caption(
@@ -275,13 +286,14 @@ if items:
     _vm_count = sum(1 for i in items if "off" not in (i.powerstate or "").lower())
     _backup_gb_preview = round(_total_storage * backup_pct / 100.0, 2)
     _la_gb_preview = round(la_mb_per_vm_per_day * _vm_count * 30 / 1024.0, 2)
+    _sec_label = ", ".join(SECURITY_COMPONENTS[k]["label"].split(" (")[0] for k in sec_enabled) if sec_enabled else "None"
     st.caption(
         f"Region(s): **{region_pair}** · "
         f"Strategy: **{MIGRATION_STRATEGIES[strategy_key]['label']}** · "
         f"LZ: **{'on' if include_lz else 'off'}** · "
         f"HA: **{'on' if include_ha else 'off'}** · "
         f"BCDR: **{'on' if include_bcdr else 'off'}** · "
-        f"Security: **{SECURITY_TIERS[security_tier]['label']}**"
+        f"Security: **{_sec_label}**"
     )
     st.caption(
         f"Dynamic sizing · Backup: **{_backup_gb_preview:,.1f} GB** "
@@ -338,17 +350,14 @@ if items:
                     secondary_region=secondary_region,
                 )
 
-            # Security tier. Only add its own Log Analytics line if the LZ
-            # isn't already carrying log_analytics (otherwise double-billing).
-            lz_has_la = include_lz and "log_analytics" in lz_selected
-            sec_lines = build_security_tier_bom(
+            # Security components — individual checkboxes; Sentinel uses la_gb.
+            sec_lines = build_security_bom(
                 client=client,
                 region=region,
-                tier=security_tier,
+                enabled_keys=sec_enabled,
                 vm_count=vm_count,
-                log_analytics_gb=la_gb,
-                sentinel_gb=la_gb,
-                add_log_analytics=not lz_has_la,
+                la_gb=la_gb,
+                manual_counts=sec_manual_counts,
             )
 
             all_lines = compute_lines + ha_extra + lz_lines + bcdr_lines + sec_lines
