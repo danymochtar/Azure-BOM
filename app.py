@@ -98,7 +98,12 @@ with st.sidebar:
             secondary_region = sec_pick
 
     st.subheader("Landing zone components")
-    st.caption("Pick exactly what to include. Greyed out if 'Landing Zone' master toggle is off.")
+    st.caption(
+        "Pick exactly what to include. External connectivity is typically "
+        "**Public IP** OR **ExpressRoute** (or both if you need internet egress "
+        "plus private on-prem connectivity). Greyed out if the 'Landing Zone' "
+        "master toggle is off."
+    )
     lz_selected = []
     lz_overrides = {}
     for comp in LANDING_ZONE_COMPONENTS:

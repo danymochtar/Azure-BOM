@@ -38,6 +38,17 @@ def _contains(meter_substr: str):
     return picker
 
 
+def _contains_all(*substrs: str):
+    def picker(records: List[PriceRecord]) -> Optional[PriceRecord]:
+        subs = [s.lower() for s in substrs]
+        filtered = [
+            r for r in records
+            if all(s in r.meter_name.lower() for s in subs)
+        ]
+        return _cheapest(filtered) or _cheapest(records)
+    return picker
+
+
 LANDING_ZONE_COMPONENTS: List[LzComponent] = [
     LzComponent(
         key="public_ip",
@@ -57,6 +68,43 @@ LANDING_ZONE_COMPONENTS: List[LzComponent] = [
             and "ip" in r.meter_name.lower()
         ]) or _cheapest(records),
         notes="Standard static Public IP for ingress / NAT gateway. Quantity = 1 IP × 730h.",
+    ),
+    LzComponent(
+        key="expressroute_circuit",
+        category="Networking",
+        resource="ExpressRoute circuit (1 Gbps, metered)",
+        default_enabled=False,
+        quantity=1.0,
+        unit="circuit/month",
+        # ExpressRoute circuits carry armRegionName='Global' in the retail feed,
+        # so we deliberately omit the region filter.
+        build_filter=lambda region: (
+            "serviceName eq 'ExpressRoute' and priceType eq 'Consumption'"
+        ),
+        pick=_contains_all("1 gbps", "circuit"),
+        notes=(
+            "Private connectivity from on-prem to Azure. Default tier: 1 Gbps, "
+            "metered. For unlimited data plans edit the meter filter. "
+            "Outbound data transfer and ISP cross-connect costs are billed separately."
+        ),
+    ),
+    LzComponent(
+        key="expressroute_gateway",
+        category="Networking",
+        resource="ExpressRoute Gateway (ErGw1AZ, zone-redundant)",
+        default_enabled=False,
+        quantity=HOURS_PER_MONTH,
+        unit="hours",
+        build_filter=lambda region: (
+            f"serviceName eq 'VPN Gateway' and armRegionName eq '{region}' "
+            f"and priceType eq 'Consumption'"
+        ),
+        pick=_contains("ErGw1AZ"),
+        notes=(
+            "ExpressRoute Gateway attached to the hub VNet. ErGw1AZ is the "
+            "zone-redundant entry SKU (~1 Gbps). Use ErGw2AZ / ErGw3AZ for "
+            "higher throughput (~2 / ~10 Gbps)."
+        ),
     ),
     LzComponent(
         key="firewall",
