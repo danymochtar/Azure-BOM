@@ -36,7 +36,7 @@ from src.output import (
     build_pricing_calculator_links,
 )
 from src.parsers import parse_inventory, ai_parse_inventory, classify
-from src.pricing.retail import RetailPricesClient
+from src.pricing.retail import BILLING_TERMS, RetailPricesClient
 from src import storage
 from src.workloads import (
     AZURE_OPENAI_MODELS,
@@ -82,6 +82,25 @@ with st.sidebar:
         "Currency",
         CURRENCIES,
         index=CURRENCIES.index(_default_currency) if _default_currency in CURRENCIES else CURRENCIES.index(DEFAULT_CURRENCY),
+    )
+
+    st.subheader("Billing term")
+    _bt_keys = list(BILLING_TERMS.keys())
+    _saved_bt = _prefs.get("pricing_mode", "payg")
+    _bt_idx = _bt_keys.index(_saved_bt) if _saved_bt in _bt_keys else 0
+    pricing_mode = st.radio(
+        "How compute is billed",
+        _bt_keys,
+        format_func=lambda k: BILLING_TERMS[k]["label"],
+        index=_bt_idx,
+        help=(
+            "Applied to VM compute only. RI = upfront prepay for 1 or 3 "
+            "years (biggest discount, least flexible). Savings Plan = "
+            "1/3-year hourly commitment (discount, more flexible — covers "
+            "any VM family). When a SKU has no RI/SP price in the region, "
+            "the line silently falls back to PAYG and a notice appears "
+            "after Generate."
+        ),
     )
 
     st.subheader("AI key")
@@ -428,7 +447,7 @@ if st.button("Run Azure Cost Assessment", type="primary"):
             compute_lines, mapping_rows = build_compute_bom(
                 items=items, client=client, region=region,
                 headroom=headroom, disk_tier=disk_tier, os_override=os_mode,
-                app_name=app_name,
+                app_name=app_name, pricing_mode=pricing_mode,
             )
             if include_ha:
                 compute_lines = apply_ha_multiplier(compute_lines, factor=2)
@@ -504,6 +523,15 @@ if st.button("Run Azure Cost Assessment", type="primary"):
             "Deploy-to-region remains your primary selection; only the pricing "
             "lookup was redirected."
         )
+    if getattr(client, "term_fallbacks", None):
+        skus = ", ".join(
+            f"{sku} ({BILLING_TERMS.get(mode, {}).get('label', mode)})"
+            for sku, mode in sorted(client.term_fallbacks)
+        )
+        st.info(
+            f"RI/Savings Plan not available for some SKUs — those lines fell "
+            f"back to Pay-as-you-go: {skus}."
+        )
     if getattr(client, "_last_error", None):
         st.warning(f"Retail Prices API had issues: {client._last_error}")
 
@@ -522,6 +550,7 @@ if st.button("Run Azure Cost Assessment", type="primary"):
             "region": region,
             "currency": currency,
             "strategy_key": locals().get("strategy_key", "iaas"),
+            "pricing_mode": pricing_mode,
             "include_lz": include_lz,
             "include_ha": include_ha,
             "include_bcdr": include_bcdr,

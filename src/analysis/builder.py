@@ -13,6 +13,15 @@ def aggregate_vm_count(items: List[InventoryItem]) -> int:
     return sum(1 for i in items if "off" not in (i.powerstate or "").lower())
 
 
+_BILLING_TAG: dict = {
+    "payg": "",
+    "sp_1y": " [SP 1Y]",
+    "sp_3y": " [SP 3Y]",
+    "ri_1y": " [RI 1Y]",
+    "ri_3y": " [RI 3Y]",
+}
+
+
 def build_compute_bom(
     items: List[InventoryItem],
     client: RetailPricesClient,
@@ -21,6 +30,7 @@ def build_compute_bom(
     disk_tier: str = "Premium SSD",
     os_override: str = "as-detected",
     app_name: str = "",
+    pricing_mode: str = "payg",
 ) -> Tuple[List[BomLine], List[dict]]:
     """Return (bom lines, mapping_rows) where mapping_rows is a per-VM record
     showing source specs -> target Azure SKUs for UI display.
@@ -71,11 +81,12 @@ def build_compute_bom(
             vm_custom = f"{names[0]}+{len(names)-1}-more"
         if app_name:
             vm_custom = f"{app_name}-{vm_custom}"
-        price = client.vm_price(arm_name, region, os_is_windows=win)
+        price = client.vm_price(arm_name, region, os_is_windows=win, pricing_mode=pricing_mode)
+        tag = _BILLING_TAG.get(pricing_mode, "")
         if not price:
             lines.append(BomLine(
                 category="Compute",
-                resource=f"Virtual Machine - {sku.display}",
+                resource=f"Virtual Machine - {sku.display}{tag}",
                 sku=arm_name,
                 meter="(price not found)",
                 region=region,
@@ -91,7 +102,7 @@ def build_compute_bom(
         qty_hours = grp["count"] * HOURS_PER_MONTH
         lines.append(BomLine(
             category="Compute",
-            resource=f"Virtual Machine - {sku.display} {'(Windows)' if win else '(Linux)'} x{grp['count']}",
+            resource=f"Virtual Machine - {sku.display} {'(Windows)' if win else '(Linux)'} x{grp['count']}{tag}",
             sku=arm_name,
             meter=price.meter_name,
             region=region,

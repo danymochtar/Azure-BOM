@@ -87,6 +87,7 @@ DEFAULT_PREFS: dict = {
     "region": "",
     "currency": "",
     "strategy_key": "iaas",
+    "pricing_mode": "payg",
     "include_lz": True,
     "include_ha": False,
     "include_bcdr": False,

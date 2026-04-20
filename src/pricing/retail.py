@@ -13,8 +13,9 @@ can surface them to the user.
 """
 from __future__ import annotations
 
+import dataclasses
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 import requests
@@ -24,6 +25,24 @@ from ..constants import REGION_FALLBACKS
 
 ENDPOINT = "https://prices.azure.com/api/retail/prices"
 HOURS_PER_MONTH = 730.0
+
+
+# Supported billing terms. Values are the canonical mode keys used in the
+# rest of the codebase. PAYG is the default.
+BILLING_TERMS: Dict[str, Dict] = {
+    "payg":  {"label": "Pay-as-you-go",        "hours_per_term": None, "sp_term": None, "ri_term": None},
+    "sp_1y": {"label": "Savings Plan (1 year)",  "hours_per_term": None, "sp_term": "P1Y", "ri_term": None},
+    "sp_3y": {"label": "Savings Plan (3 years)", "hours_per_term": None, "sp_term": "P3Y", "ri_term": None},
+    "ri_1y": {"label": "Reserved Instance (1 year)",  "hours_per_term": HOURS_PER_MONTH * 12, "sp_term": None, "ri_term": "1 Year"},
+    "ri_3y": {"label": "Reserved Instance (3 years)", "hours_per_term": HOURS_PER_MONTH * 36, "sp_term": None, "ri_term": "3 Years"},
+}
+
+
+@dataclass
+class SavingsPlanEntry:
+    term: str          # "P1Y" | "P3Y"
+    unit_price: float
+    retail_price: float
 
 
 @dataclass
@@ -44,9 +63,23 @@ class PriceRecord:
     sku_id: str
     meter_id: str
     raw: dict
+    reservation_term: str = ""        # "1 Year" | "3 Years" | ""
+    savings_plan: List[SavingsPlanEntry] = field(default_factory=list)
 
     @classmethod
     def from_api(cls, item: dict) -> "PriceRecord":
+        sp_entries: List[SavingsPlanEntry] = []
+        for sp in item.get("savingsPlan", []) or []:
+            try:
+                sp_entries.append(
+                    SavingsPlanEntry(
+                        term=sp.get("term", ""),
+                        unit_price=float(sp.get("unitPrice", 0.0) or 0.0),
+                        retail_price=float(sp.get("retailPrice", 0.0) or 0.0),
+                    )
+                )
+            except (TypeError, ValueError):
+                continue
         return cls(
             product_name=item.get("productName", ""),
             sku_name=item.get("skuName", ""),
@@ -64,6 +97,8 @@ class PriceRecord:
             sku_id=item.get("skuId", ""),
             meter_id=item.get("meterId", ""),
             raw=item,
+            reservation_term=item.get("reservationTerm", ""),
+            savings_plan=sp_entries,
         )
 
 
@@ -77,6 +112,9 @@ class RetailPricesClient:
         # Record (primary, fallback) pairs when the fallback was used so the
         # UI can inform the user that e.g. Malaysia prices came from SEA.
         self.fallbacks_used: Set[Tuple[str, str]] = set()
+        # Record (arm_sku, pricing_mode) pairs where RI/SP wasn't available
+        # and we fell back to PAYG for that particular SKU.
+        self.term_fallbacks: Set[Tuple[str, str]] = set()
 
     def query(self, odata_filter: str, max_pages: int = 3) -> List[PriceRecord]:
         """Query retail prices; transparently falls back to an alternate
@@ -137,16 +175,92 @@ class RetailPricesClient:
         arm_sku_name: str,
         region: str,
         os_is_windows: bool,
-        reservation: str = "Consumption",
+        pricing_mode: str = "payg",
     ) -> Optional[PriceRecord]:
-        """Price per hour for a VM SKU in a region. Filters out Low Priority
-        / Spot / Windows vs Linux correctly.
+        """Price per hour for a VM SKU under the chosen billing term.
+
+        Returns a PriceRecord whose `retail_price` is ALWAYS a per-hour
+        effective rate — so downstream builders can uniformly compute
+        `retail_price * count * 730` for monthly cost. For RI the API's
+        prepaid total is converted to an amortized per-hour rate.
+
+        Falls back transparently to PAYG when the requested term isn't
+        available for this SKU in the region. Fallbacks are recorded in
+        `self.term_fallbacks` so the UI can surface them.
         """
+        term_cfg = BILLING_TERMS.get(pricing_mode, BILLING_TERMS["payg"])
+
+        # Always fetch the Consumption record — we need it for PAYG and for
+        # Savings Plan (SP entries live inside the Consumption record).
+        payg = self._vm_payg(arm_sku_name, region, os_is_windows)
+
+        if pricing_mode == "payg" or pricing_mode is None:
+            return payg
+
+        # Savings Plan: look inside the Consumption record's savingsPlan array.
+        sp_term = term_cfg.get("sp_term")
+        if sp_term:
+            if not payg:
+                return None
+            for sp in payg.savings_plan:
+                if sp.term == sp_term:
+                    tagged_meter = f"{payg.meter_name} (SP {sp_term})"
+                    return dataclasses.replace(
+                        payg,
+                        retail_price=sp.retail_price,
+                        unit_price=sp.unit_price,
+                        meter_name=tagged_meter,
+                        price_type="SavingsPlan",
+                    )
+            # Not available → fall back to PAYG
+            self.term_fallbacks.add((arm_sku_name, pricing_mode))
+            return payg
+
+        # Reserved Instance
+        ri_term = term_cfg.get("ri_term")
+        if ri_term:
+            filt = (
+                f"serviceName eq 'Virtual Machines' "
+                f"and armRegionName eq '{region}' "
+                f"and armSkuName eq '{arm_sku_name}' "
+                f"and priceType eq 'Reservation'"
+            )
+            records = self.query(filt, max_pages=5)
+
+            def is_windows_rec(r: PriceRecord) -> bool:
+                return "windows" in r.product_name.lower()
+
+            candidates = [
+                r for r in records
+                if r.reservation_term == ri_term
+                and is_windows_rec(r) == os_is_windows
+            ]
+            if not candidates:
+                self.term_fallbacks.add((arm_sku_name, pricing_mode))
+                return payg
+            chosen = min(candidates, key=lambda r: r.retail_price)
+            # RI retailPrice is the TOTAL prepaid for the term. Convert to a
+            # per-hour equivalent so downstream math stays identical.
+            hours_per_term = term_cfg["hours_per_term"]
+            per_hour = chosen.retail_price / hours_per_term if hours_per_term else 0
+            return dataclasses.replace(
+                chosen,
+                retail_price=per_hour,
+                unit_price=per_hour,
+                meter_name=f"{chosen.meter_name} (RI {ri_term})",
+                price_type="Reservation",
+            )
+
+        return payg
+
+    def _vm_payg(
+        self, arm_sku_name: str, region: str, os_is_windows: bool
+    ) -> Optional[PriceRecord]:
         filt = (
             f"serviceName eq 'Virtual Machines' "
             f"and armRegionName eq '{region}' "
             f"and armSkuName eq '{arm_sku_name}' "
-            f"and priceType eq '{reservation}'"
+            f"and priceType eq 'Consumption'"
         )
         records = self.query(filt, max_pages=5)
 
