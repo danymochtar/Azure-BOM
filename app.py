@@ -155,6 +155,52 @@ with st.sidebar:
         ),
     )
 
+    # ------------- Pricing diagnostic -------------
+    with st.expander("🔍 Diagnose billing-term availability", expanded=False):
+        st.caption(
+            "Check whether the Azure Retail Prices API actually returns SP / RI "
+            "meters for a given VM SKU in your region. If any row shows "
+            "'(not found)', the app silently falls back to PAYG for that SKU."
+        )
+        diag_sku = st.text_input(
+            "ARM VM SKU to probe", value="Standard_D4s_v5",
+            key="diag_sku",
+            help="e.g. Standard_D4s_v5, Standard_E16s_v5, Standard_NC24ads_A100_v4",
+        )
+        diag_os = st.selectbox("OS for the probe", ["Linux", "Windows"], key="diag_os")
+        if st.button("Probe retail prices for this SKU", key="diag_probe"):
+            try:
+                from src.pricing.retail import RetailPricesClient as _RPC, BILLING_TERMS as _BT
+                _c = _RPC(currency=currency)
+                diag_win = diag_os == "Windows"
+                rows = []
+                for mode_key, cfg in _BT.items():
+                    rec = _c.vm_price(diag_sku, region, os_is_windows=diag_win,
+                                      pricing_mode=mode_key, use_ahb=False)
+                    if rec is None:
+                        rows.append({
+                            "Mode": cfg["label"], "Status": "NOT FOUND",
+                            "Per-hour rate": "—", "Meter": "—",
+                            "Monthly (×730)": "$0.00",
+                        })
+                    else:
+                        # "Consumption" means we fell back to PAYG, NOT what user asked for
+                        actual = rec.price_type or "Consumption"
+                        status = "OK" if actual != "Consumption" or mode_key == "payg" else "FALLBACK → PAYG"
+                        rows.append({
+                            "Mode": cfg["label"], "Status": status,
+                            "Per-hour rate": f"${rec.retail_price:.4f}",
+                            "Meter": rec.meter_name[:60],
+                            "Monthly (×730)": f"${rec.retail_price * 730:.2f}",
+                        })
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                if _c.fallbacks_used:
+                    st.info(f"Regional fallbacks used during probe: {sorted(_c.fallbacks_used)}")
+                if getattr(_c, "_last_error", None):
+                    st.warning(_c._last_error)
+            except Exception as e:
+                st.error(f"Probe failed: {type(e).__name__}: {e}")
+
     st.subheader("AI key")
     _secrets_key = ""
     try:
@@ -443,13 +489,18 @@ if st.button("Run Azure Cost Assessment", type="primary"):
             "lookup was redirected."
         )
     if getattr(client, "term_fallbacks", None):
-        skus = ", ".join(
-            f"{sku} ({BILLING_TERMS.get(mode, {}).get('label', mode)})"
+        pair_strs = [
+            f"• `{sku}` ({BILLING_TERMS.get(mode, {}).get('label', mode)})"
             for sku, mode in sorted(client.term_fallbacks)
-        )
-        st.info(
-            f"RI/Savings Plan not available for some SKUs — those lines fell "
-            f"back to Pay-as-you-go: {skus}."
+        ]
+        n = len(pair_strs)
+        st.warning(
+            f"**{n} SKU(s) have no Reserved Instance / Savings Plan meter in "
+            f"`{region}`** — those lines were priced at Pay-as-you-go instead, "
+            "and the BOM label for those lines does NOT show a SP/RI tag (so "
+            "you can spot them). List:\n\n" + "\n".join(pair_strs) +
+            "\n\n_Tip: open the sidebar's **🔍 Diagnose billing-term availability** "
+            "tool to probe your exact SKU + region._"
         )
     if getattr(client, "_last_error", None):
         st.warning(f"Retail Prices API had issues: {client._last_error}")

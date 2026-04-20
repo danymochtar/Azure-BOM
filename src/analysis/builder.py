@@ -21,6 +21,16 @@ _BILLING_TAG: dict = {
     "ri_3y": " [RI 3Y]",
 }
 
+# Map what the PriceRecord.price_type says back to a tag. When vm_price
+# falls back to PAYG (because the SKU lacks an SP/RI record in the region),
+# the returned record's price_type is "Consumption" — we must NOT tag it as
+# SP/RI in that case, or users will see a discount label with no discount.
+_PRICE_TYPE_TAG: dict = {
+    "Consumption":  "",
+    "SavingsPlan":  None,   # use the user's chosen pricing_mode tag
+    "Reservation":  None,   # same
+}
+
 
 def build_compute_bom(
     items: List[InventoryItem],
@@ -87,9 +97,16 @@ def build_compute_bom(
             pricing_mode=pricing_mode, use_ahb=use_ahb,
         )
         # License tag — included in every compute row so the BOM makes the
-        # licensing basis explicit (Azure cost standard).
+        # licensing basis explicit (Azure cost standard). CRITICAL: read the
+        # actual PriceRecord.price_type, not the user's requested
+        # `pricing_mode`, so when vm_price fell back to PAYG (no SP/RI in
+        # this region for this SKU) the tag reflects reality.
+        actual_price_type = getattr(price, "price_type", "") if price else ""
+        if actual_price_type in ("SavingsPlan", "Reservation"):
+            term_tag = _BILLING_TAG.get(pricing_mode, "")
+        else:
+            term_tag = ""   # fell back to PAYG; no SP/RI discount applied
         ahb_tag = " [AHB]" if (use_ahb and win) else ""
-        term_tag = _BILLING_TAG.get(pricing_mode, "")
         license_tag = f"{term_tag}{ahb_tag}"
         os_label = "Windows" + (" / AHB BYOL" if use_ahb and win else "") if win else "Linux"
         if not price:
