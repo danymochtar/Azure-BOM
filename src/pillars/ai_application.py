@@ -143,13 +143,19 @@ GPU_VM_SKUS: Dict[str, str] = {
 # `service_name` is the Retail Prices API serviceName filter.
 
 COGNITIVE_SERVICES: Dict[str, Dict] = {
+    # `meter_unit_divisor` converts the user's prompt unit (how we ask them
+    # to enter) into the retail-meter unit (how Azure bills):
+    #   user enters "transactions/month" → meter bills per 1000 transactions
+    #     → divisor = 1000 (i.e. user input / 1000 = billable units).
+    # This is the source of the 1000× risk flagged by the math audit.
     "vision": {
         "label": "Azure AI Vision",
         "service_name": "Cognitive Services",
         "meter_hint": "computer vision s1",
         "unit_prompt": "Transactions / month",
         "unit_label": "transaction",
-        "notes": "Image analysis, OCR, Face API. Most endpoints at ~$1.50 per 1K transactions.",
+        "meter_unit_divisor": 1000.0,   # meter is per 1K transactions
+        "notes": "Image analysis, OCR, Face API. ~$1.50 per 1K transactions.",
     },
     "language": {
         "label": "Azure AI Language",
@@ -157,6 +163,7 @@ COGNITIVE_SERVICES: Dict[str, Dict] = {
         "meter_hint": "language s",
         "unit_prompt": "Text records / month (1 record ≈ 1K chars)",
         "unit_label": "1K-char record",
+        "meter_unit_divisor": 1000.0,
         "notes": "Sentiment, entity recognition, key phrases, classification.",
     },
     "translator": {
@@ -165,6 +172,7 @@ COGNITIVE_SERVICES: Dict[str, Dict] = {
         "meter_hint": "translator text s1",
         "unit_prompt": "Characters / month (in millions)",
         "unit_label": "M characters",
+        "meter_unit_divisor": 1.0,   # user already enters in millions
         "notes": "Free tier = 2M chars/mo. Standard S1 = $10 per 1M chars.",
     },
     "speech_stt": {
@@ -173,6 +181,7 @@ COGNITIVE_SERVICES: Dict[str, Dict] = {
         "meter_hint": "speech to text s",
         "unit_prompt": "Audio hours / month",
         "unit_label": "audio-hour",
+        "meter_unit_divisor": 1.0,
         "notes": "Standard real-time + batch transcription.",
     },
     "speech_tts": {
@@ -181,30 +190,34 @@ COGNITIVE_SERVICES: Dict[str, Dict] = {
         "meter_hint": "neural text to speech",
         "unit_prompt": "Characters / month (in millions)",
         "unit_label": "M characters",
+        "meter_unit_divisor": 1.0,
         "notes": "Neural voices. ~$16 per 1M chars.",
     },
     "document_intelligence": {
         "label": "Azure AI Document Intelligence",
         "service_name": "Azure AI Document Intelligence",
         "meter_hint": "prebuilt",
-        "unit_prompt": "Pages analyzed / month (in thousands)",
-        "unit_label": "1K pages",
+        "unit_prompt": "Pages analyzed / month",
+        "unit_label": "page",
+        "meter_unit_divisor": 1000.0,   # meter is per 1K pages
         "notes": "Formerly Form Recognizer. Prebuilt + custom models.",
     },
     "content_safety": {
         "label": "Azure AI Content Safety",
         "service_name": "Cognitive Services",
         "meter_hint": "content safety",
-        "unit_prompt": "Transactions / month (in thousands)",
-        "unit_label": "1K transactions",
+        "unit_prompt": "Transactions / month",
+        "unit_label": "transaction",
+        "meter_unit_divisor": 1000.0,
         "notes": "Text + image moderation for generative AI applications.",
     },
     "custom_vision": {
         "label": "Azure AI Custom Vision",
         "service_name": "Cognitive Services",
         "meter_hint": "custom vision",
-        "unit_prompt": "Transactions / month (in thousands)",
-        "unit_label": "1K transactions",
+        "unit_prompt": "Transactions / month",
+        "unit_label": "transaction",
+        "meter_unit_divisor": 1000.0,
         "notes": "Custom image classification models.",
     },
 }
@@ -397,6 +410,10 @@ def _cognitive_line(
     client: RetailPricesClient, region: str,
     service_key: str, qty: float, app_name: str,
 ) -> Optional[BomLine]:
+    """Cognitive Services line. `qty` is in the user's prompt unit; we divide
+    by `meter_unit_divisor` before multiplying by the retail rate so per-1K
+    meters (Vision / Doc Intelligence / Content Safety / Custom Vision) bill
+    correctly against raw user counts."""
     if qty <= 0:
         return None
     cfg = COGNITIVE_SERVICES.get(service_key)
@@ -409,13 +426,18 @@ def _cognitive_line(
     chosen = _pick(recs, cfg["meter_hint"])
     if not chosen:
         return None
+    divisor = float(cfg.get("meter_unit_divisor", 1.0))
+    billable_units = qty / divisor if divisor else qty
     return BomLine(
         category="AI + ML",
-        resource=f"{cfg['label']} — {qty:,.2f} {cfg['unit_label']}/mo",
+        resource=(
+            f"{cfg['label']} — {qty:,.0f} {cfg['unit_label']}/mo "
+            f"(= {billable_units:,.2f} billable units)"
+        ),
         sku=chosen.sku_name or chosen.product_name, meter=chosen.meter_name,
-        region=region, quantity=qty, unit=cfg["unit_label"],
+        region=region, quantity=billable_units, unit=chosen.unit_of_measure or "unit",
         unit_price=chosen.retail_price,
-        monthly_cost=round(chosen.retail_price * qty, 2),
+        monthly_cost=round(chosen.retail_price * billable_units, 2),
         currency=chosen.currency_code,
         source="retail-prices",
         product_id=chosen.product_id, sku_id=chosen.sku_id, meter_id=chosen.meter_id,

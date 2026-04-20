@@ -75,6 +75,61 @@ ANTHROPIC_API_KEY = "sk-ant-..."
   line, for programmatic reproduction.
 - **Deep links** to the per-product pages in the live Azure Pricing Calculator.
 
+## Calculator parity
+
+This app aims for ≤5 % variance from the live Azure Pricing Calculator for
+common scenarios. `scripts/verify_calculations.py` codifies reference
+scenarios and flags regressions:
+
+```bash
+python scripts/verify_calculations.py --region malaysiawest          # report-only
+python scripts/verify_calculations.py --region eastus --strict        # exit non-zero on fail
+```
+
+Covered reference scenarios: 3× D4s v5 Linux PAYG, 3× D4s v5 Windows + AHB
+(should equal Linux PAYG), RI 1Y vs PAYG discount ratio, Fabric F64,
+Sentinel 50 GB/day PAYG, tiered bandwidth egress (10 TB), Azure OpenAI
+GPT-4o-mini token spend.
+
+### Tier 1 math fixes shipped in this revision
+
+- **Bandwidth egress** uses the MS tier ladder (first 100 GB free;
+  0-10 TB / 10-50 TB / 50-150 TB / 150-500 TB / 500 TB+) via
+  `src/pricing/bandwidth.py`, instead of flat-rate × GB.
+- **Azure Backup** is split into two lines — per-VM protected instance fee
+  (auto-populated from lift-shift VM count) AND per-GB storage.
+- **App Gateway WAF v2** bills BOTH the base instance hour AND the
+  Capacity Units (default 2 CU, configurable).
+- **Azure Firewall** adds an optional per-GB processed line when the
+  data-processed input is > 0.
+- **Cognitive Services** now has a `meter_unit_divisor` per service so the
+  user can enter raw transactions/pages — we convert to billable units
+  (per-1K for Vision / Doc Intelligence / Content Safety / Custom Vision)
+  before pricing.
+
+### Tier 2 services added
+
+Landing zone: **NAT Gateway** (Standard). Security: **DDoS Protection
+Standard** (IP Protection per-IP + Network Protection plan).
+Data Platform: **Azure SQL Managed Instance** (GP/BC tiers, honors AHB),
+**Azure Database for PostgreSQL Flexible Server**, **Azure Database for
+MySQL Flexible Server**, **Azure Cache for Redis** (Basic → Enterprise
+Flash), **Azure Files** (Standard / Premium, LRS/ZRS/GRS). App
+Modernization: **Azure Service Bus** (Basic / Standard / Premium).
+
+### What's NOT yet modelled (follow-up)
+
+- Reserved capacity for non-VM services (Cosmos RI, SQL DB RI, Synapse RI,
+  Databricks RI)
+- Enterprise Agreement / CSP commitment discount percentage
+- Spot VM pricing (PAYG / SP / RI only today)
+- Dev/Test subscription discount flag
+- Blob Storage tiers (Hot/Cool/Cold/Archive) with transaction ops
+- IoT Hub, Logic Apps, Event Grid, Service Bus Relay, Azure Automation
+- Azure Stack HCI licensing, Azure VMware Solution, Dedicated Hosts
+
+---
+
 ## Security & data handling
 
 - API keys are held in Streamlit session memory only. Never written to disk.

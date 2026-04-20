@@ -142,6 +142,8 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
     backup_pct = int(prefs.get("backup_pct", 40))
     la_mb_per_vm_per_day = int(prefs.get("la_mb_per_vm_per_day", 200))
     bandwidth_gb = int(prefs.get("bandwidth_gb", 200))
+    waf_capacity_units = int(prefs.get("waf_capacity_units", 2))
+    firewall_gb = int(prefs.get("firewall_gb_processed", 0))
     if include_lz:
         with st.expander("Landing zone components (tick what to include)", expanded=True):
             st.caption(
@@ -160,8 +162,30 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
                 min_value=0, max_value=5000, value=la_mb_per_vm_per_day, step=50,
             )
             bandwidth_gb = st.number_input(
-                "Bandwidth egress — GB/month (above the free 100 GB tier)",
-                min_value=0, max_value=1_000_000, value=bandwidth_gb, step=50,
+                "Bandwidth egress — TOTAL GB/month (first 100 GB free; tiered)",
+                min_value=0, max_value=10_000_000, value=bandwidth_gb, step=50,
+                help=(
+                    "Total outbound data transfer per month. Azure applies "
+                    "tiered pricing: 0-10 TB full rate, 10-50 TB ~5% off, "
+                    "50-150 TB ~20% off, 150-500 TB ~45% off, 500+ TB ~55% off."
+                ),
+            )
+            waf_capacity_units = st.number_input(
+                "App Gateway WAF v2 — Capacity Units (avg)",
+                min_value=0, max_value=125, value=int(prefs.get("waf_capacity_units", 2)), step=1,
+                help=(
+                    "Azure Pricing Calculator bills WAF v2 on base instance "
+                    "hours PLUS Capacity Units. Typical: 2-4 CU."
+                ),
+            )
+            firewall_gb = st.number_input(
+                "Azure Firewall — data processed (GB/month)",
+                min_value=0, max_value=10_000_000,
+                value=int(prefs.get("firewall_gb_processed", 0)), step=100,
+                help=(
+                    "Per-GB processed charge on top of the deployment hour. "
+                    "Leave 0 if the firewall only handles hub idle traffic."
+                ),
             )
 
     # ----- Exports for cross-pillar wiring -----
@@ -182,6 +206,8 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
         "backup_pct": backup_pct,
         "la_mb_per_vm_per_day": la_mb_per_vm_per_day,
         "bandwidth_gb": bandwidth_gb,
+        "waf_capacity_units": waf_capacity_units,
+        "firewall_gb_processed": firewall_gb,
         "__exports__": {
             "vm_count": vm_count,
             "la_gb": la_gb,
@@ -219,13 +245,33 @@ def build_bom(client, region: str, inputs: dict, app_name: str, pricing_mode: st
         "recovery_vault": backup_gb,
         "log_analytics": la_gb,
         "bandwidth_egress": float(inputs.get("bandwidth_gb", 200)),
+        # Azure Backup per-VM protected-instance fee — VM count from inventory
+        "recovery_vault_instances": float(vm_count),
+        # App Gateway WAF v2 Capacity Units × 730 h
+        "app_gateway_waf_cu": float(inputs.get("waf_capacity_units", 2)) * 730.0,
+        # Azure Firewall per-GB processed
+        "firewall_data": float(inputs.get("firewall_gb_processed", 0)),
     }
 
-    if inputs.get("include_lz") and inputs.get("lz_selected"):
+    # Auto-enable derived LZ components that pair with primary toggles:
+    #   recovery_vault    → also adds recovery_vault_instances
+    #   app_gateway_waf   → also adds app_gateway_waf_cu (if CU input > 0)
+    #   firewall          → also adds firewall_data (if GB input > 0)
+    auto_enabled = list(inputs.get("lz_selected") or [])
+    if "recovery_vault" in auto_enabled and "recovery_vault_instances" not in auto_enabled and vm_count > 0:
+        auto_enabled.append("recovery_vault_instances")
+    if "app_gateway_waf" in auto_enabled and inputs.get("waf_capacity_units", 0) > 0 \
+            and "app_gateway_waf_cu" not in auto_enabled:
+        auto_enabled.append("app_gateway_waf_cu")
+    if "firewall" in auto_enabled and inputs.get("firewall_gb_processed", 0) > 0 \
+            and "firewall_data" not in auto_enabled:
+        auto_enabled.append("firewall_data")
+
+    if inputs.get("include_lz") and auto_enabled:
         all_lines.extend(
             build_landing_zone_bom(
                 client=client, region=region,
-                enabled_keys=inputs["lz_selected"],
+                enabled_keys=auto_enabled,
                 quantity_overrides=lz_overrides,
             )
         )

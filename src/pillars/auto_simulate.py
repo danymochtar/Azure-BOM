@@ -53,6 +53,7 @@ PILLAR_SCHEMAS: Dict[str, str] = {
   "cosmos_ru_per_second": int,
   "synapse_dwu": int,
   "azure_sql_db": {"tier": "none|gp|bc|hs", "vcores": int, "storage_gb": int, "zone_redundant": bool},
+  "azure_sql_mi": {"tier": "none|gp|bc", "vcores": int, "storage_gb": int},
   "adls_gen2": {"tier": "none|hot|cool|cold", "redundancy": "LRS|ZRS|GRS|RA-GRS", "storage_gb": int},
   "adf": {"pipeline_runs": int, "diu_hours": float, "ssis_ir_hours": float},
   "event_hubs": {"tier": "none|standard|premium|dedicated", "units": int},
@@ -60,11 +61,15 @@ PILLAR_SCHEMAS: Dict[str, str] = {
   "synapse_serverless": {"tb_per_month": float},
   "power_bi": {"sku": "none|F2|F8|F16|F32|F64|P1|P2|P3|A1|A2|A3|A4|A5|A6"},
   "adx": {"sku": "none|dev_d11_v2|compute_d14_v2|compute_d32d_v4|storage_e16s_v4|storage_e64s_v4", "count": int},
-  "cosmos_serverless": {"request_units_month": int, "storage_gb": float}
+  "cosmos_serverless": {"request_units_month": int, "storage_gb": float},
+  "postgres_flexible": {"tier": "none|burstable|general_purpose|memory_optimized", "vcores": int, "storage_gb": int, "ha_enabled": bool},
+  "mysql_flexible":    {"tier": "none|burstable|general_purpose|memory_optimized", "vcores": int, "storage_gb": int, "ha_enabled": bool},
+  "redis_cache":       {"tier": "none|basic|standard|premium|enterprise|enterprise_flash", "sku": "C0|C1|C2|C3|C4|C5|C6|P1|P2|P3|P4|P5|E10|E20|E50|E100|E200|E400|none"},
+  "azure_files":       {"tier": "none|standard_lrs|standard_zrs|standard_grs|premium_lrs|premium_zrs", "storage_gb": int}
 }""",
     "azure_security": """Schema for azure_security.suggested_inputs:
 {
-  "enabled":         ["cspm","servers_p2","sql_on_vms","storage","appsvc","keyvault","containers","sentinel","waf","private_link","purview","pim"],
+  "enabled":         ["cspm","servers_p2","sql_on_vms","storage","appsvc","keyvault","containers","sentinel","waf","private_link","purview","pim","ddos_ip_protection","ddos_network_protection"],
   "manual_counts":   {"<defender_plan_or_component_key>": number, ...},
   "siem_gb_per_day": float,
   "siem_retention_days": int,
@@ -78,7 +83,8 @@ PILLAR_SCHEMAS: Dict[str, str] = {
   "acr":            {"sku": "none|Basic|Standard|Premium", "geo_replica_count": int},
   "container_apps": {"vcpu_seconds": float, "mem_gib_seconds": float, "request_millions": float},
   "apim":           {"tier": "none|consumption|basic_v2|standard_v2|premium", "units": int},
-  "front_door":     {"tier": "none|standard|premium", "routes": int}
+  "front_door":     {"tier": "none|standard|premium", "routes": int},
+  "service_bus":    {"tier": "none|basic|standard|premium", "units": int}
 }""",
     "infra_lift_shift": """Schema for infra_lift_shift.suggested_inputs (advisory only — the pillar
 still reads the file with Sonnet for VM extraction):

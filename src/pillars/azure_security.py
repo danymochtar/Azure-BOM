@@ -112,6 +112,20 @@ SECURITY_COMPONENTS: Dict[str, Dict] = {
         "unit_prompt": "Eligible users",
         "notes": "Per user-month for PIM-eligible identities.",
     },
+    "ddos_ip_protection": {
+        "label": "Azure DDoS IP Protection (per public IP)",
+        "default": False,
+        "scales_with": "manual",
+        "unit_prompt": "Protected public IPs",
+        "notes": "~$199/mo per protected IP. Cheaper than Network Protection for small footprints.",
+    },
+    "ddos_network_protection": {
+        "label": "Azure DDoS Network Protection (flat, up to 100 resources)",
+        "default": False,
+        "scales_with": "manual",
+        "unit_prompt": "Protection plans (usually 1)",
+        "notes": "Flat ~$2,944/mo. Covers up to 100 public IPs across the tenant; extra IPs charged separately.",
+    },
 }
 
 
@@ -413,6 +427,36 @@ def build_security_bom(
             resource=f"Entra ID P2 / PIM × {int(qty)} users",
             service_display="Microsoft Entra ID",
             custom_name=f"{app_prefix}EntraP2-PIM",
+        )
+        if l:
+            lines.append(l)
+
+    if "ddos_ip_protection" in enabled_keys:
+        qty = manual_counts.get("ddos_ip_protection", 0) or 0
+        l = _manual_flat_line(
+            client, region,
+            service_name_filter="DDoS Protection",
+            meter_hint="ip protection",
+            qty=qty, unit_label="ip-month",
+            category="Security",
+            resource=f"Azure DDoS IP Protection × {int(qty)} public IPs",
+            service_display="Azure DDoS Protection",
+            custom_name=f"{app_prefix}DDoS-IP",
+        )
+        if l:
+            lines.append(l)
+
+    if "ddos_network_protection" in enabled_keys:
+        qty = manual_counts.get("ddos_network_protection", 1) or 1
+        l = _manual_flat_line(
+            client, region,
+            service_name_filter="DDoS Protection",
+            meter_hint="network protection",
+            qty=qty, unit_label="plan-month",
+            category="Security",
+            resource=f"Azure DDoS Network Protection × {int(qty)} plan",
+            service_display="Azure DDoS Protection",
+            custom_name=f"{app_prefix}DDoS-Network",
         )
         if l:
             lines.append(l)

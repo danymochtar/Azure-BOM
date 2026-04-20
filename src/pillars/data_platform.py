@@ -32,6 +32,35 @@ AZURE_SQL_DB_TIERS: Dict[str, str] = {
     "hs":   "Hyperscale (scale-out storage)",
 }
 
+SQL_MI_TIERS: Dict[str, str] = {
+    "gp":   "Managed Instance General Purpose",
+    "bc":   "Managed Instance Business Critical",
+}
+
+POSTGRES_TIERS: Dict[str, Dict] = {
+    "burstable":       {"label": "Burstable (B-series)",         "meter_hint": "burstable"},
+    "general_purpose": {"label": "General Purpose (D-series)",   "meter_hint": "general purpose"},
+    "memory_optimized":{"label": "Memory Optimized (E-series)",  "meter_hint": "memory optimized"},
+}
+
+MYSQL_TIERS = POSTGRES_TIERS  # Same tier structure
+
+REDIS_TIERS: Dict[str, Dict] = {
+    "basic":            {"label": "Basic (C-series, dev/test)",    "meter_hint": "basic c"},
+    "standard":         {"label": "Standard (C-series, HA pair)",  "meter_hint": "standard c"},
+    "premium":          {"label": "Premium (P-series, clustering)","meter_hint": "premium p"},
+    "enterprise":       {"label": "Enterprise (E-series)",          "meter_hint": "enterprise e"},
+    "enterprise_flash": {"label": "Enterprise Flash (F-series)",    "meter_hint": "enterprise flash"},
+}
+
+AZURE_FILES_TIERS: Dict[str, Dict] = {
+    "standard_lrs": {"label": "Standard LRS (transaction-optimized)", "meter_hint": "standard lrs"},
+    "standard_zrs": {"label": "Standard ZRS",                         "meter_hint": "standard zrs"},
+    "standard_grs": {"label": "Standard GRS",                         "meter_hint": "standard grs"},
+    "premium_lrs":  {"label": "Premium LRS (low-latency, SSD)",       "meter_hint": "premium lrs"},
+    "premium_zrs":  {"label": "Premium ZRS",                          "meter_hint": "premium zrs"},
+}
+
 ADLS_TIERS: Dict[str, str] = {
     "hot":  "Hot (frequent access)",
     "cool": "Cool (infrequent)",
@@ -527,6 +556,216 @@ def _cosmos_serverless_line(
     return out
 
 
+# ---------------------------------------------------------------------------
+# Azure SQL Managed Instance
+# ---------------------------------------------------------------------------
+
+# AHB for Managed Instance is typically ~40 % off compute for both tiers
+_SQL_MI_AHB_DISCOUNT: Dict[str, float] = {"gp": 0.40, "bc": 0.40}
+
+
+def _azure_sql_mi_lines(
+    client: RetailPricesClient, region: str,
+    tier_key: str, vcores: int, storage_gb: int, app_name: str,
+    use_ahb_sql: bool = False,
+) -> List[BomLine]:
+    if tier_key == "none" or vcores <= 0:
+        return []
+    recs = client.query(
+        f"serviceName eq 'SQL Managed Instance' and armRegionName eq '{region}' and priceType eq 'Consumption'"
+    )
+    hint = "general purpose" if tier_key == "gp" else "business critical"
+    compute = _pick(
+        [r for r in recs if hint in (r.meter_name + r.product_name).lower()
+         and "vcore" in r.meter_name.lower()],
+        hint,
+    ) or _pick(recs, hint)
+    out: List[BomLine] = []
+    if compute:
+        qty = vcores * HOURS_PER_MONTH
+        discount = _SQL_MI_AHB_DISCOUNT.get(tier_key, 0.0) if use_ahb_sql else 0.0
+        rate = compute.retail_price * (1.0 - discount)
+        ahb_tag = f" [AHB -{int(discount*100)}%]" if use_ahb_sql else ""
+        out.append(BomLine(
+            category="Data + Analytics",
+            resource=f"Azure SQL Managed Instance {SQL_MI_TIERS[tier_key]} × {vcores} vCores{ahb_tag}",
+            sku=compute.sku_name or compute.product_name, meter=compute.meter_name,
+            region=region, quantity=qty, unit="vCore-hours",
+            unit_price=rate, monthly_cost=round(rate * qty, 2),
+            currency=compute.currency_code,
+            source="retail-prices",
+            product_id=compute.product_id, sku_id=compute.sku_id, meter_id=compute.meter_id,
+            service_name="Azure SQL Managed Instance",
+            custom_name=f"{app_name}-SQLMI-{tier_key}" if app_name else f"SQLMI-{tier_key}",
+        ))
+    if storage_gb > 0:
+        storage = _pick(
+            [r for r in recs if "storage" in r.meter_name.lower()],
+            "storage",
+        )
+        if storage:
+            out.append(BomLine(
+                category="Data + Analytics",
+                resource=f"Azure SQL MI storage ({storage_gb} GB)",
+                sku=storage.sku_name or storage.product_name, meter=storage.meter_name,
+                region=region, quantity=storage_gb, unit="GB",
+                unit_price=storage.retail_price,
+                monthly_cost=round(storage.retail_price * storage_gb, 2),
+                currency=storage.currency_code,
+                source="retail-prices",
+                product_id=storage.product_id, sku_id=storage.sku_id, meter_id=storage.meter_id,
+                service_name="Azure SQL Managed Instance",
+                custom_name=f"{app_name}-SQLMI-{tier_key}-Storage" if app_name else f"SQLMI-{tier_key}-Storage",
+            ))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# PostgreSQL / MySQL Flexible Server
+# ---------------------------------------------------------------------------
+
+def _flex_server_lines(
+    client: RetailPricesClient, region: str,
+    service_name: str, service_display: str, custom_prefix: str,
+    tier_key: str, vcores: int, storage_gb: int, ha_enabled: bool,
+    app_name: str,
+) -> List[BomLine]:
+    if tier_key == "none" or vcores <= 0:
+        return []
+    cfg = POSTGRES_TIERS.get(tier_key)  # same shape as MySQL
+    if not cfg:
+        return []
+    recs = client.query(
+        f"serviceName eq '{service_name}' and armRegionName eq '{region}' and priceType eq 'Consumption'"
+    )
+    compute = _pick(
+        [r for r in recs if "flexible" in (r.meter_name + r.product_name).lower()
+         and cfg["meter_hint"] in (r.meter_name + r.product_name).lower()],
+        cfg["meter_hint"],
+    ) or _pick(recs, cfg["meter_hint"])
+    out: List[BomLine] = []
+    if compute:
+        # HA ≈ 2 × compute (primary + standby)
+        mult = 2 if ha_enabled else 1
+        qty = vcores * HOURS_PER_MONTH * mult
+        ha_tag = " [HA]" if ha_enabled else ""
+        out.append(BomLine(
+            category="Data + Analytics",
+            resource=f"{service_display} Flexible {cfg['label']} × {vcores} vCores{ha_tag}",
+            sku=compute.sku_name or compute.product_name, meter=compute.meter_name,
+            region=region, quantity=qty, unit="vCore-hours",
+            unit_price=compute.retail_price,
+            monthly_cost=round(compute.retail_price * qty, 2),
+            currency=compute.currency_code,
+            source="retail-prices",
+            product_id=compute.product_id, sku_id=compute.sku_id, meter_id=compute.meter_id,
+            service_name=service_display,
+            custom_name=f"{app_name}-{custom_prefix}-{tier_key}" if app_name else f"{custom_prefix}-{tier_key}",
+        ))
+    if storage_gb > 0:
+        storage = _pick(
+            [r for r in recs if "storage" in r.meter_name.lower() and "flexible" in (r.product_name + r.meter_name).lower()],
+            "storage",
+        )
+        if storage:
+            mult = 2 if ha_enabled else 1
+            out.append(BomLine(
+                category="Data + Analytics",
+                resource=f"{service_display} Flexible storage ({storage_gb} GB){' [HA]' if ha_enabled else ''}",
+                sku=storage.sku_name or storage.product_name, meter=storage.meter_name,
+                region=region, quantity=storage_gb * mult, unit="GB",
+                unit_price=storage.retail_price,
+                monthly_cost=round(storage.retail_price * storage_gb * mult, 2),
+                currency=storage.currency_code,
+                source="retail-prices",
+                product_id=storage.product_id, sku_id=storage.sku_id, meter_id=storage.meter_id,
+                service_name=service_display,
+                custom_name=f"{app_name}-{custom_prefix}-{tier_key}-Storage" if app_name else f"{custom_prefix}-{tier_key}-Storage",
+            ))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Azure Cache for Redis
+# ---------------------------------------------------------------------------
+
+def _redis_line(
+    client: RetailPricesClient, region: str,
+    tier_key: str, sku: str, app_name: str,
+) -> Optional[BomLine]:
+    if tier_key == "none" or not sku or sku == "none":
+        return None
+    cfg = REDIS_TIERS.get(tier_key)
+    if not cfg:
+        return None
+    recs = client.query(
+        f"serviceName eq 'Azure Cache for Redis' and armRegionName eq '{region}' and priceType eq 'Consumption'"
+    )
+    candidates = [
+        r for r in recs
+        if cfg["meter_hint"] in (r.meter_name + r.product_name).lower()
+        and sku.lower() in (r.meter_name + r.sku_name + r.product_name).lower()
+    ]
+    chosen = _pick(candidates, cfg["meter_hint"]) or _pick(recs, cfg["meter_hint"])
+    if not chosen:
+        return None
+    qty = HOURS_PER_MONTH
+    return BomLine(
+        category="Data + Analytics",
+        resource=f"Azure Cache for Redis {cfg['label']} {sku}",
+        sku=sku, meter=chosen.meter_name,
+        region=region, quantity=qty, unit="hours",
+        unit_price=chosen.retail_price,
+        monthly_cost=round(chosen.retail_price * qty, 2),
+        currency=chosen.currency_code,
+        source="retail-prices",
+        product_id=chosen.product_id, sku_id=chosen.sku_id, meter_id=chosen.meter_id,
+        service_name="Azure Cache for Redis",
+        custom_name=f"{app_name}-Redis-{sku}" if app_name else f"Redis-{sku}",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Azure Files (Standard + Premium)
+# ---------------------------------------------------------------------------
+
+def _azure_files_line(
+    client: RetailPricesClient, region: str,
+    tier_key: str, storage_gb: int, app_name: str,
+) -> Optional[BomLine]:
+    if tier_key == "none" or storage_gb <= 0:
+        return None
+    cfg = AZURE_FILES_TIERS.get(tier_key)
+    if not cfg:
+        return None
+    recs = client.query(
+        f"serviceName eq 'Storage' and armRegionName eq '{region}' and priceType eq 'Consumption'"
+    )
+    chosen = None
+    for r in recs:
+        blob = (r.meter_name + " " + r.product_name).lower()
+        if "file" in blob and cfg["meter_hint"] in blob:
+            if chosen is None or r.retail_price < chosen.retail_price:
+                chosen = r
+    if not chosen:
+        chosen = _pick(recs, cfg["meter_hint"])
+    if not chosen:
+        return None
+    return BomLine(
+        category="Data + Analytics",
+        resource=f"Azure Files {cfg['label']} — {storage_gb:,} GB",
+        sku=chosen.sku_name or chosen.product_name, meter=chosen.meter_name,
+        region=region, quantity=storage_gb, unit="GB",
+        unit_price=chosen.retail_price,
+        monthly_cost=round(chosen.retail_price * storage_gb, 2),
+        currency=chosen.currency_code,
+        source="retail-prices",
+        product_id=chosen.product_id, sku_id=chosen.sku_id, meter_id=chosen.meter_id,
+        service_name="Azure Files",
+        custom_name=f"{app_name}-AzureFiles-{tier_key}" if app_name else f"AzureFiles-{tier_key}",
+    )
+
+
 # Back-compat
 def build_data_platform_bom(
     client: RetailPricesClient, region: str,
@@ -712,6 +951,118 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
                 value=float(cosmos_sl_pref.get("storage_gb", 0.0)), step=10.0,
             )
 
+    # --- Azure SQL Managed Instance ---
+    mi_pref = prefs.get("azure_sql_mi", {}) or {}
+    with st.expander("Azure SQL Managed Instance", expanded=False):
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            _mi_opts = ["none"] + list(SQL_MI_TIERS.keys())
+            mi_tier = st.selectbox(
+                "Tier", _mi_opts,
+                index=_sel_idx(_mi_opts, mi_pref.get("tier", "none")),
+                format_func=lambda k: "None" if k == "none" else SQL_MI_TIERS[k],
+            )
+        with c2:
+            mi_vcores = st.number_input(
+                "vCores", min_value=0, value=int(mi_pref.get("vcores", 0)),
+                step=4, disabled=(mi_tier == "none"),
+            )
+        with c3:
+            mi_storage = st.number_input(
+                "Storage GB", min_value=0, value=int(mi_pref.get("storage_gb", 0)),
+                step=50, disabled=(mi_tier == "none"),
+            )
+
+    # --- PostgreSQL Flexible ---
+    pg_pref = prefs.get("postgres_flexible", {}) or {}
+    with st.expander("Azure Database for PostgreSQL — Flexible Server", expanded=False):
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            _pg_opts = ["none"] + list(POSTGRES_TIERS.keys())
+            pg_tier = st.selectbox(
+                "Compute tier", _pg_opts, key="pg_tier",
+                index=_sel_idx(_pg_opts, pg_pref.get("tier", "none")),
+                format_func=lambda k: "None" if k == "none" else POSTGRES_TIERS[k]["label"],
+            )
+        with c2:
+            pg_vcores = st.number_input(
+                "vCores", min_value=0, value=int(pg_pref.get("vcores", 0)),
+                step=2, disabled=(pg_tier == "none"), key="pg_vcores",
+            )
+        with c3:
+            pg_storage = st.number_input(
+                "Storage GB", min_value=0, value=int(pg_pref.get("storage_gb", 0)),
+                step=50, disabled=(pg_tier == "none"), key="pg_storage",
+            )
+        with c4:
+            pg_ha = st.checkbox(
+                "HA (zone-redundant)", value=bool(pg_pref.get("ha_enabled", False)),
+                disabled=(pg_tier == "none"), key="pg_ha",
+            )
+
+    # --- MySQL Flexible ---
+    my_pref = prefs.get("mysql_flexible", {}) or {}
+    with st.expander("Azure Database for MySQL — Flexible Server", expanded=False):
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            _my_opts = ["none"] + list(MYSQL_TIERS.keys())
+            my_tier = st.selectbox(
+                "Compute tier", _my_opts, key="my_tier",
+                index=_sel_idx(_my_opts, my_pref.get("tier", "none")),
+                format_func=lambda k: "None" if k == "none" else MYSQL_TIERS[k]["label"],
+            )
+        with c2:
+            my_vcores = st.number_input(
+                "vCores", min_value=0, value=int(my_pref.get("vcores", 0)),
+                step=2, disabled=(my_tier == "none"), key="my_vcores",
+            )
+        with c3:
+            my_storage = st.number_input(
+                "Storage GB", min_value=0, value=int(my_pref.get("storage_gb", 0)),
+                step=50, disabled=(my_tier == "none"), key="my_storage",
+            )
+        with c4:
+            my_ha = st.checkbox(
+                "HA (zone-redundant)", value=bool(my_pref.get("ha_enabled", False)),
+                disabled=(my_tier == "none"), key="my_ha",
+            )
+
+    # --- Azure Cache for Redis ---
+    redis_pref = prefs.get("redis_cache", {}) or {}
+    with st.expander("Azure Cache for Redis", expanded=False):
+        c1, c2 = st.columns(2)
+        with c1:
+            _r_opts = ["none"] + list(REDIS_TIERS.keys())
+            redis_tier = st.selectbox(
+                "Tier", _r_opts,
+                index=_sel_idx(_r_opts, redis_pref.get("tier", "none")),
+                format_func=lambda k: "None" if k == "none" else REDIS_TIERS[k]["label"],
+            )
+        with c2:
+            redis_sku = st.text_input(
+                "SKU / size (e.g. C1, P2, E10)",
+                value=str(redis_pref.get("sku", "")),
+                disabled=(redis_tier == "none"),
+                help="Basic/Standard use C0-C6. Premium uses P1-P5. Enterprise uses E10/E20/.../E400.",
+            )
+
+    # --- Azure Files ---
+    files_pref = prefs.get("azure_files", {}) or {}
+    with st.expander("Azure Files (Standard / Premium)", expanded=False):
+        c1, c2 = st.columns(2)
+        with c1:
+            _f_opts = ["none"] + list(AZURE_FILES_TIERS.keys())
+            files_tier = st.selectbox(
+                "Tier", _f_opts,
+                index=_sel_idx(_f_opts, files_pref.get("tier", "none")),
+                format_func=lambda k: "None" if k == "none" else AZURE_FILES_TIERS[k]["label"],
+            )
+        with c2:
+            files_gb = st.number_input(
+                "Provisioned GB", min_value=0, value=int(files_pref.get("storage_gb", 0)),
+                step=100, disabled=(files_tier == "none"),
+            )
+
     return {
         "fabric_sku": fabric_sku,
         "cosmos_ru_per_second": int(cosmos_ru),
@@ -736,6 +1087,19 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
             "request_units_month": int(cosmos_sl_ru),
             "storage_gb": float(cosmos_sl_storage),
         },
+        "azure_sql_mi": {
+            "tier": mi_tier, "vcores": int(mi_vcores), "storage_gb": int(mi_storage),
+        },
+        "postgres_flexible": {
+            "tier": pg_tier, "vcores": int(pg_vcores),
+            "storage_gb": int(pg_storage), "ha_enabled": bool(pg_ha),
+        },
+        "mysql_flexible": {
+            "tier": my_tier, "vcores": int(my_vcores),
+            "storage_gb": int(my_storage), "ha_enabled": bool(my_ha),
+        },
+        "redis_cache": {"tier": redis_tier, "sku": redis_sku or "none"},
+        "azure_files": {"tier": files_tier, "storage_gb": int(files_gb)},
     }
 
 
@@ -817,5 +1181,49 @@ def build_bom(client, region: str, inputs: dict, app_name: str, pricing_mode: st
             storage_gb=cosmos_sl.get("storage_gb", 0.0),
             app_name=app_name,
         ))
+
+    # Azure SQL Managed Instance (honors use_ahb_sql)
+    mi = inputs.get("azure_sql_mi", {})
+    lines.extend(_azure_sql_mi_lines(
+        client, region,
+        tier_key=mi.get("tier", "none"),
+        vcores=mi.get("vcores", 0), storage_gb=mi.get("storage_gb", 0),
+        app_name=app_name, use_ahb_sql=bool(inputs.get("__use_ahb_sql__", False)),
+    ))
+
+    # PostgreSQL Flexible
+    pg = inputs.get("postgres_flexible", {})
+    lines.extend(_flex_server_lines(
+        client, region,
+        service_name="Azure Database for PostgreSQL", service_display="Azure PostgreSQL",
+        custom_prefix="Postgres",
+        tier_key=pg.get("tier", "none"), vcores=pg.get("vcores", 0),
+        storage_gb=pg.get("storage_gb", 0), ha_enabled=pg.get("ha_enabled", False),
+        app_name=app_name,
+    ))
+
+    # MySQL Flexible
+    my = inputs.get("mysql_flexible", {})
+    lines.extend(_flex_server_lines(
+        client, region,
+        service_name="Azure Database for MySQL", service_display="Azure MySQL",
+        custom_prefix="MySQL",
+        tier_key=my.get("tier", "none"), vcores=my.get("vcores", 0),
+        storage_gb=my.get("storage_gb", 0), ha_enabled=my.get("ha_enabled", False),
+        app_name=app_name,
+    ))
+
+    # Redis Cache
+    redis_cfg = inputs.get("redis_cache", {})
+    if redis_cfg.get("tier") and redis_cfg["tier"] != "none" \
+            and redis_cfg.get("sku") and redis_cfg["sku"] != "none":
+        l = _redis_line(client, region, redis_cfg["tier"], redis_cfg["sku"], app_name)
+        if l: lines.append(l)
+
+    # Azure Files
+    files_cfg = inputs.get("azure_files", {})
+    if files_cfg.get("tier") and files_cfg["tier"] != "none" and files_cfg.get("storage_gb", 0) > 0:
+        l = _azure_files_line(client, region, files_cfg["tier"], files_cfg["storage_gb"], app_name)
+        if l: lines.append(l)
 
     return lines, []

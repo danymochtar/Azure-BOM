@@ -89,6 +89,24 @@ LANDING_ZONE_COMPONENTS: List[LzComponent] = [
         ),
     ),
     LzComponent(
+        key="nat_gateway",
+        category="Networking",
+        resource="NAT Gateway (Standard)",
+        default_enabled=False,
+        quantity=HOURS_PER_MONTH,
+        unit="hours",
+        build_filter=lambda region: (
+            f"serviceName eq 'NAT Gateway' and armRegionName eq '{region}' "
+            f"and priceType eq 'Consumption'"
+        ),
+        pick=_contains("standard"),
+        notes=(
+            "Per-gateway hourly charge for outbound SNAT. "
+            "Data processing is billed separately by Azure (~$0.045/GB) — "
+            "currently modelled as the per-hour fixture only."
+        ),
+    ),
+    LzComponent(
         key="expressroute_gateway",
         category="Networking",
         resource="ExpressRoute Gateway (ErGw1AZ, zone-redundant)",
@@ -229,7 +247,7 @@ LANDING_ZONE_COMPONENTS: List[LzComponent] = [
     LzComponent(
         key="recovery_vault",
         category="Management",
-        resource="Recovery Services Vault / Azure Backup",
+        resource="Azure Backup storage (LRS/GRS)",
         default_enabled=False,
         quantity=50.0,
         unit="GB",
@@ -237,8 +255,67 @@ LANDING_ZONE_COMPONENTS: List[LzComponent] = [
             f"serviceName eq 'Backup' and armRegionName eq '{region}' "
             f"and priceType eq 'Consumption'"
         ),
-        pick=_contains("Protected Instances"),
-        notes="Enable for VM backup. Tune GB & RPO per workload.",
+        # Pick the cheapest "data stored" meter — matches the GB quantity
+        pick=_contains("data stored"),
+        notes=(
+            "Per-GB backup storage. Default is LRS/GRS retail — tune the "
+            "quantity via the Backup % slider. For the per-VM protected "
+            "instance fee, tick 'Azure Backup — protected instances' below."
+        ),
+    ),
+    LzComponent(
+        key="recovery_vault_instances",
+        category="Management",
+        resource="Azure Backup — protected instances",
+        default_enabled=False,
+        quantity=1.0,
+        unit="instance/month",
+        build_filter=lambda region: (
+            f"serviceName eq 'Backup' and armRegionName eq '{region}' "
+            f"and priceType eq 'Consumption'"
+        ),
+        pick=_contains("protected instances"),
+        notes=(
+            "Flat per-VM fee (~$5/VM up to 50 GB, ~$10 up to 500 GB, then "
+            "additional blocks). Quantity = # VMs protected. Auto-populated "
+            "from the lift-shift inventory when both pillars are active."
+        ),
+    ),
+    LzComponent(
+        key="app_gateway_waf_cu",
+        category="Networking",
+        resource="Application Gateway WAF v2 — Capacity Units",
+        default_enabled=False,
+        quantity=2.0 * HOURS_PER_MONTH,   # 2 CU × 730 h default
+        unit="CU-hours",
+        build_filter=lambda region: (
+            f"serviceName eq 'Application Gateway' and armRegionName eq '{region}' "
+            f"and priceType eq 'Consumption'"
+        ),
+        pick=_contains_all("waf v2", "capacity unit"),
+        notes=(
+            "CU scales with throughput — typical WAF v2 runs 2-4 CU. Default "
+            "quantity = 2 CU × 730 hours. Raise in the sidebar for heavier "
+            "workloads."
+        ),
+    ),
+    LzComponent(
+        key="firewall_data",
+        category="Networking",
+        resource="Azure Firewall — data processed",
+        default_enabled=False,
+        quantity=0.0,
+        unit="GB",
+        build_filter=lambda region: (
+            f"serviceName eq 'Azure Firewall' and armRegionName eq '{region}' "
+            f"and priceType eq 'Consumption'"
+        ),
+        pick=_contains_all("standard", "data processed"),
+        notes=(
+            "Per-GB processed charge on top of the Azure Firewall deployment "
+            "hour. Enter expected monthly GB through the firewall. 0 = don't "
+            "bill (useful if the firewall only sees idle hub traffic)."
+        ),
     ),
 ]
 
@@ -273,6 +350,38 @@ def build_landing_zone_bom(
                 )
             )
             continue
+        # Tiered bandwidth egress (MS tier table) — use the tiered helper
+        # instead of flat-rate × GB. The retail feed returns the tier-1 price;
+        # compute_tiered_egress extrapolates the rest of the curve.
+        if comp.key == "bandwidth_egress":
+            from ..pricing.bandwidth import compute_tiered_egress
+            tiered_total, weighted_rate, _bd = compute_tiered_egress(
+                total_gb_month=qty,
+                first_tier_rate=chosen.retail_price,
+            )
+            lines.append(
+                BomLine(
+                    category=comp.category,
+                    resource=(
+                        f"{comp.resource} (~{qty:,.0f} GB/mo, tiered — "
+                        f"eff. ${weighted_rate:.4f}/GB)"
+                    ),
+                    sku=chosen.sku_name or chosen.product_name,
+                    meter=chosen.meter_name + " (tier-weighted)",
+                    region=region,
+                    quantity=qty,
+                    unit=comp.unit,
+                    unit_price=weighted_rate,
+                    monthly_cost=round(tiered_total, 2),
+                    currency=chosen.currency_code,
+                    source="retail-prices",
+                    product_id=chosen.product_id,
+                    sku_id=chosen.sku_id,
+                    meter_id=chosen.meter_id,
+                )
+            )
+            continue
+
         monthly = chosen.retail_price * qty
         # Rewrite the resource label to reflect the ACTUAL quantity when the
         # caller overrode the default (backup %, LA MB/day/VM, bandwidth GB).

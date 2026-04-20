@@ -99,13 +99,16 @@ Rules:
      "app_gateway_waf", "bandwidth_egress", "log_analytics", "key_vault",
      "recovery_vault", "ha", "bcdr"
    - Modernization: "app_service", "aks", "container_apps", "api_management",
-     "front_door", "acr"
-   - Data: "fabric", "synapse", "cosmos_db", "azure_sql_db", "adls_gen2",
-     "adf", "event_hubs", "databricks", "power_bi"
+     "front_door", "acr", "service_bus"
+   - Data: "fabric", "synapse", "cosmos_db", "azure_sql_db", "sql_mi",
+     "adls_gen2", "adf", "event_hubs", "databricks", "power_bi",
+     "postgres_flexible", "mysql_flexible", "redis_cache", "azure_files"
    - AI: "azure_openai", "ai_search", "ml_workspace", "gpu_vm",
      "cognitive_services", "fine_tuning"
    - Security: "defender_cspm", "defender_servers_p2", "sentinel", "waf",
-     "private_link", "purview", "pim"
+     "private_link", "purview", "pim", "ddos_ip_protection",
+     "ddos_network_protection"
+   - Networking LZ: "nat_gateway"
    - Hybrid/Multicloud: "azure_arc", "defender_multicloud", "arc_sql_payg",
      "arc_winserver_payg", "arc_k8s", "arc_la_ingestion"
 4. `signals` short phrases quoting evidence ("column 'SIEM EPS'",

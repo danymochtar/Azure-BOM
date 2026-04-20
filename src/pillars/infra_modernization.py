@@ -59,6 +59,12 @@ FRONT_DOOR_TIERS: Dict[str, str] = {
     "premium":  "Front Door Premium",
 }
 
+SERVICE_BUS_TIERS: Dict[str, Dict] = {
+    "basic":    {"label": "Basic (queues only, 1 msg/op)",  "meter_hint": "basic"},
+    "standard": {"label": "Standard (topics + sessions)",   "meter_hint": "standard"},
+    "premium":  {"label": "Premium (dedicated MUs)",        "meter_hint": "premium"},
+}
+
 
 # ---------------------------------------------------------------------------
 # Line builders
@@ -281,6 +287,37 @@ def _apim_line(
     )
 
 
+def _service_bus_line(
+    client: RetailPricesClient, region: str, tier_key: str, units: int, app_name: str,
+) -> Optional[BomLine]:
+    if tier_key == "none" or units <= 0:
+        return None
+    cfg = SERVICE_BUS_TIERS.get(tier_key)
+    if not cfg:
+        return None
+    recs = client.query(
+        f"serviceName eq 'Service Bus' and armRegionName eq '{region}' and priceType eq 'Consumption'"
+    )
+    chosen = _pick(recs, cfg["meter_hint"])
+    if not chosen:
+        return None
+    # Premium is per MU-hour; Basic/Standard are per namespace-hour.
+    qty = units * HOURS_PER_MONTH
+    return BomLine(
+        category="App Modernization",
+        resource=f"Azure Service Bus {cfg['label']} × {units}",
+        sku=chosen.sku_name or chosen.product_name, meter=chosen.meter_name,
+        region=region, quantity=qty, unit="hours",
+        unit_price=chosen.retail_price,
+        monthly_cost=round(chosen.retail_price * qty, 2),
+        currency=chosen.currency_code,
+        source="retail-prices",
+        product_id=chosen.product_id, sku_id=chosen.sku_id, meter_id=chosen.meter_id,
+        service_name="Azure Service Bus",
+        custom_name=f"{app_name}-ServiceBus-{tier_key}" if app_name else f"ServiceBus-{tier_key}",
+    )
+
+
 def _front_door_line(
     client: RetailPricesClient, region: str, tier: str, routes: int, app_name: str,
 ) -> Optional[BomLine]:
@@ -422,6 +459,23 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
             fd_routes = st.number_input("Routes (info)", min_value=0, value=int(fd_pref.get("routes", 0)),
                                           step=1, disabled=(fd_tier == "none"))
 
+    sb_pref = prefs.get("service_bus", {}) or {}
+    with st.expander("Azure Service Bus", expanded=False):
+        c1, c2 = st.columns(2)
+        with c1:
+            _sb_opts = ["none"] + list(SERVICE_BUS_TIERS)
+            sb_tier = st.selectbox(
+                "Tier", _sb_opts,
+                index=_sel_idx(_sb_opts, sb_pref.get("tier", "none")),
+                format_func=lambda k: "None" if k == "none" else SERVICE_BUS_TIERS[k]["label"],
+            )
+        with c2:
+            sb_units = st.number_input(
+                "Namespaces / MUs", min_value=0, value=int(sb_pref.get("units", 0)),
+                step=1, disabled=(sb_tier == "none"),
+                help="Basic/Standard: count of namespaces. Premium: messaging units (1/2/4).",
+            )
+
     return {
         "app_service": {
             "sku": appsvc_sku, "count": int(appsvc_count),
@@ -439,6 +493,7 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
         },
         "apim": {"tier": apim_tier, "units": int(apim_units)},
         "front_door": {"tier": fd_tier, "routes": int(fd_routes)},
+        "service_bus": {"tier": sb_tier, "units": int(sb_units)},
     }
 
 
@@ -493,6 +548,13 @@ def build_bom(client, region: str, inputs: dict, app_name: str, pricing_mode: st
     l = _front_door_line(
         client, region,
         tier=fd.get("tier", "none"), routes=fd.get("routes", 0), app_name=app_name,
+    )
+    if l: lines.append(l)
+
+    sb = inputs.get("service_bus", {})
+    l = _service_bus_line(
+        client, region,
+        tier_key=sb.get("tier", "none"), units=sb.get("units", 0), app_name=app_name,
     )
     if l: lines.append(l)
 
