@@ -40,6 +40,25 @@ def _contains(meter_substr: str):
 
 LANDING_ZONE_COMPONENTS: List[LzComponent] = [
     LzComponent(
+        key="public_ip",
+        category="Networking",
+        resource="Public IP Address (Standard, static)",
+        default_enabled=True,
+        quantity=HOURS_PER_MONTH,
+        unit="hours",
+        build_filter=lambda region: (
+            f"serviceName eq 'Virtual Network' and armRegionName eq '{region}' "
+            f"and priceType eq 'Consumption'"
+        ),
+        pick=lambda records: _cheapest([
+            r for r in records
+            if "standard" in (r.meter_name + r.sku_name).lower()
+            and "static" in (r.meter_name + r.sku_name).lower()
+            and "ip" in r.meter_name.lower()
+        ]) or _cheapest(records),
+        notes="Standard static Public IP for ingress / NAT gateway. Quantity = 1 IP × 730h.",
+    ),
+    LzComponent(
         key="firewall",
         category="Networking",
         resource="Azure Firewall (Standard)",

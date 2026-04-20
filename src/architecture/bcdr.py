@@ -33,27 +33,38 @@ def build_bcdr_bom(
     items: List[InventoryItem],
     snapshot_ratio: float = 0.4,
     storage_redundancy: str = "GRS",
+    secondary_region: Optional[str] = None,
 ) -> List[BomLine]:
-    """Return BCDR lines: Site Recovery + replicated backup storage."""
+    """Return BCDR lines: Site Recovery + replicated backup storage.
+
+    `secondary_region`, when provided, is used as the replication target:
+    the ASR per-instance fee is priced in the secondary region (where the
+    replica runs) and the resource label calls out the DR pair.
+    """
     lines: List[BomLine] = []
+    asr_region = secondary_region or region
+    pair_label = f"{region} → {secondary_region}" if secondary_region else region
     vm_count = len(items)
     total_storage_gb = round(sum(i.storage_gb for i in items), 2)
     backup_gb = round(total_storage_gb * snapshot_ratio, 2)
 
-    # --- Azure Site Recovery (per protected instance) ---
+    # --- Azure Site Recovery (per protected instance, priced in replica region) ---
     asr_records = client.query(
-        f"serviceName eq 'Azure Site Recovery' and armRegionName eq '{region}' "
+        f"serviceName eq 'Azure Site Recovery' and armRegionName eq '{asr_region}' "
         f"and priceType eq 'Consumption'"
     )
     asr = _pick(asr_records, "replicated instance")
+    resource_label = (
+        f"Azure Site Recovery — {vm_count} protected instance(s) [{pair_label}]"
+    )
     if asr and vm_count > 0:
         lines.append(
             BomLine(
                 category="BCDR",
-                resource=f"Azure Site Recovery — {vm_count} protected instance(s)",
+                resource=resource_label,
                 sku=asr.sku_name or asr.product_name,
                 meter=asr.meter_name,
-                region=region,
+                region=asr_region,
                 quantity=vm_count,
                 unit="instance/month",
                 unit_price=asr.retail_price,
@@ -69,10 +80,10 @@ def build_bcdr_bom(
         lines.append(
             BomLine(
                 category="BCDR",
-                resource=f"Azure Site Recovery — {vm_count} protected instance(s)",
+                resource=resource_label,
                 sku="N/A",
                 meter="(price not found)",
-                region=region,
+                region=asr_region,
                 quantity=vm_count,
                 unit="instance/month",
                 unit_price=0.0,
@@ -81,7 +92,7 @@ def build_bcdr_bom(
             )
         )
 
-    # --- Replicated backup storage (GRS) ---
+    # --- Replicated backup storage (GRS / LRS) priced in primary region ---
     if backup_gb > 0:
         storage_records = client.query(
             f"serviceName eq 'Backup' and armRegionName eq '{region}' "
@@ -93,7 +104,7 @@ def build_bcdr_bom(
             lines.append(
                 BomLine(
                     category="BCDR",
-                    resource=f"Backup Storage ({storage_redundancy}, ~{backup_gb} GB)",
+                    resource=f"Backup Storage ({storage_redundancy}, ~{backup_gb} GB) [{region}]",
                     sku=chosen.sku_name or chosen.product_name,
                     meter=chosen.meter_name,
                     region=region,

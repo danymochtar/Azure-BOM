@@ -47,8 +47,15 @@ st.caption(
 # ---------------- Sidebar controls ----------------
 with st.sidebar:
     st.header("Configuration")
-    region = st.selectbox("Azure region", AZURE_REGIONS, index=AZURE_REGIONS.index(DEFAULT_REGION))
     currency = st.selectbox("Currency", CURRENCIES, index=CURRENCIES.index(DEFAULT_CURRENCY))
+
+    st.subheader("Regions")
+    region = st.selectbox(
+        "Primary region",
+        AZURE_REGIONS,
+        index=AZURE_REGIONS.index(DEFAULT_REGION),
+        help="Where production workloads run.",
+    )
 
     st.subheader("Migration strategy")
     strategy_key = st.radio(
@@ -60,9 +67,15 @@ with st.sidebar:
     st.caption(MIGRATION_STRATEGIES[strategy_key]["description"])
 
     st.subheader("Include in BOM")
-    include_lz = st.checkbox("Landing Zone (hub network, Firewall, Bastion, VPN, Key Vault, Log Analytics)", value=True)
-    include_ha = st.checkbox("High Availability (2x compute, Standard Load Balancer)", value=False)
-    include_bcdr = st.checkbox("BCDR (Azure Site Recovery + replicated backup)", value=False)
+    include_lz = st.checkbox("Landing Zone", value=True)
+    include_ha = st.checkbox(
+        "High Availability (2× compute, Standard Load Balancer; zone-redundant PaaS)",
+        value=False,
+    )
+    include_bcdr = st.checkbox(
+        "BCDR (Azure Site Recovery + replicated backup)",
+        value=False,
+    )
     security_tier = st.radio(
         "Security tier",
         list(SECURITY_TIERS.keys()),
@@ -70,6 +83,43 @@ with st.sidebar:
         index=1,
     )
     st.caption(SECURITY_TIERS[security_tier]["description"])
+
+    # Secondary region only makes sense with HA or BCDR
+    secondary_region = None
+    if include_ha or include_bcdr:
+        secondary_options = ["(none — single region)"] + [r for r in AZURE_REGIONS if r != region]
+        sec_pick = st.selectbox(
+            "Secondary region (DR / failover target)",
+            secondary_options,
+            index=0,
+            help="Used for BCDR replication pricing and failover annotation.",
+        )
+        if not sec_pick.startswith("(none"):
+            secondary_region = sec_pick
+
+    st.subheader("Landing zone components")
+    st.caption("Pick exactly what to include. Greyed out if 'Landing Zone' master toggle is off.")
+    lz_selected = []
+    lz_overrides = {}
+    for comp in LANDING_ZONE_COMPONENTS:
+        default_on = comp.default_enabled and include_lz
+        on = st.checkbox(
+            f"{comp.resource}",
+            value=default_on,
+            disabled=not include_lz,
+            key=f"lz_{comp.key}",
+        )
+        if on and include_lz:
+            lz_selected.append(comp.key)
+            with st.expander(f"Quantity ({comp.unit})", expanded=False):
+                lz_overrides[comp.key] = st.number_input(
+                    f"Qty in {comp.unit}",
+                    min_value=0.0,
+                    value=float(comp.quantity),
+                    key=f"lz_qty_{comp.key}",
+                    label_visibility="collapsed",
+                )
+                st.caption(comp.notes)
 
     st.divider()
     st.subheader("Sizing")
@@ -95,22 +145,6 @@ with st.sidebar:
         value=_default_key,
         help="Get one at console.anthropic.com or set ANTHROPIC_API_KEY in .streamlit/secrets.toml.",
     )
-
-    with st.expander("Advanced: landing-zone components", expanded=False):
-        lz_selected = []
-        lz_overrides = {}
-        for comp in LANDING_ZONE_COMPONENTS:
-            default_on = comp.default_enabled and include_lz
-            on = st.checkbox(f"{comp.resource}", value=default_on, key=f"lz_{comp.key}")
-            if on:
-                lz_selected.append(comp.key)
-                lz_overrides[comp.key] = st.number_input(
-                    f"Quantity ({comp.unit})",
-                    min_value=0.0,
-                    value=float(comp.quantity),
-                    key=f"lz_qty_{comp.key}",
-                )
-                st.caption(comp.notes)
 
 # ---------------- Main: upload ----------------
 st.subheader("1. Upload inventory")
@@ -139,7 +173,7 @@ def _parse_with_fallback(data: bytes, filename: str):
                     filename,
                     anthropic_key,
                     include_powered_off=include_off,
-                    strategy_hint=strategy_guidance(strategy_key),
+                    strategy_hint=strategy_guidance(strategy_key, ha_enabled=include_ha),
                 )
             if mode == "direct":
                 st.success(
@@ -198,7 +232,9 @@ if items:
     st.dataframe(inv_df, use_container_width=True, hide_index=True)
 
     st.subheader("3. Generate BOM")
+    region_pair = region if not secondary_region else f"{region} → {secondary_region}"
     st.caption(
+        f"Region(s): **{region_pair}** · "
         f"Strategy: **{MIGRATION_STRATEGIES[strategy_key]['label']}** · "
         f"LZ: **{'on' if include_lz else 'off'}** · "
         f"HA: **{'on' if include_ha else 'off'}** · "
@@ -237,7 +273,12 @@ if items:
             # BCDR
             bcdr_lines: list = []
             if include_bcdr:
-                bcdr_lines = build_bcdr_bom(client=client, region=region, items=items)
+                bcdr_lines = build_bcdr_bom(
+                    client=client,
+                    region=region,
+                    items=items,
+                    secondary_region=secondary_region,
+                )
 
             # Security tier (replaces individual Defender checkboxes)
             vm_count = aggregate_vm_count(items)
