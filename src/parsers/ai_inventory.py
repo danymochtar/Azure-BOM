@@ -304,11 +304,11 @@ def apply_mapping(
     else:
         df = sheets[mapping.sheet_name]
 
-    if mapping.row_filter:
-        try:
-            df = df.query(mapping.row_filter)
-        except Exception:
-            pass
+    # NOTE: We deliberately ignore mapping.row_filter. pandas.query() is
+    # eval-based; letting an AI-produced expression run against a DataFrame
+    # is a code-execution foothold if the preview is prompt-injected. Rows
+    # without a name are dropped below anyway, which covers the common
+    # "skip header/template rows" case.
 
     mem_factor = UNIT_TO_GB.get(mapping.memory_unit.lower(), 1.0)
     stor_factor = UNIT_TO_GB.get(mapping.storage_unit.lower(), 1.0)

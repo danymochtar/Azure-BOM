@@ -7,6 +7,7 @@ from .ai_inventory import (
     DirectExtraction,
     ExtractedItem,
 )
+from .classifier import classify, AssessmentProfile
 
 __all__ = [
     "parse_inventory",
@@ -17,4 +18,6 @@ __all__ = [
     "InventoryMapping",
     "DirectExtraction",
     "ExtractedItem",
+    "classify",
+    "AssessmentProfile",
 ]
