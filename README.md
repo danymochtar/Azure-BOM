@@ -14,13 +14,24 @@ Pricing is pulled live from the public Azure Retail Prices API
 
 ## Features
 
-- **AI parser (Claude Opus 4.7)**: handles *any* inventory layout. Claude reads
-  a preview of your file (all sheets, headers, sample rows) and returns a
-  column-mapping spec; we then apply the mapping locally to the full file.
-  Uses structured outputs + prompt caching to keep token cost low. Bring your
-  own Anthropic API key.
-- **Heuristic fallback**: RVTools `vInfo` sheet, generic inventory Excel/CSV
-  (auto-mapped columns), or hand-built infra list — no AI key required.
+- **Migration strategy** (IaaS / Hybrid / PaaS): Claude adjusts its target-service
+  recommendations per workload. Full IaaS = VMs only. Hybrid = PaaS where a
+  clear win (SQL Server → Azure SQL MI, web tier → App Service). Full PaaS =
+  aggressive refactor suggestions.
+- **Modular BOM scope**: check the boxes you want priced — Landing Zone, High
+  Availability (2× compute + Standard LB), BCDR (Azure Site Recovery + GRS
+  backup), and a **security tier** (None / Basic: Defender CSPM + Azure
+  Monitor / Full: all Defender workload plans + Log Analytics + Sentinel).
+  Uncheck everything and you'll price compute only.
+- **AI parser (Claude Opus 4.7)**: handles *any* inventory layout — tabular
+  (RVTools vInfo), pivoted/key-value (server-per-section with attributes like
+  "RAM (GB)" and "Disk (GB)" down a column), free-text specs
+  (`"2 x Xeon Gold 6346 (16 Cores)"`, `"D:4 x 1.9TB SSD, RAID 10"`), and mixed
+  units. Small files (≤500 rows) get full direct extraction with RAID
+  accounting + vCPU inference from physical CPU specs. Large files use a
+  column-mapping spec applied locally.
+- **Heuristic fallback**: RVTools `vInfo` sheet or CSV with recognizable
+  headers — no AI key required.
 - **Sizing**: right-sizes VMs with a configurable headroom factor against a
   curated Azure VM SKU catalog (D-series / E-series / B-series)
 - **Disks**: maps provisioned storage to Managed Disks (default Premium SSD)

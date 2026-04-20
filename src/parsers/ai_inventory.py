@@ -47,7 +47,12 @@ class ExtractedItem(BaseModel):
     os: str = Field(default="Linux", description="OS family, e.g. 'Windows Server 2019', 'Red Hat Enterprise Linux 8', 'Ubuntu 22.04'")
     environment: str = Field(default="prod", description="prod | dev | test | qa | staging (best guess)")
     powerstate: str = Field(default="poweredOn", description="poweredOn | poweredOff | unknown")
-    notes: str = Field(default="", description="Any caveats about the extraction (e.g. 'RAID 10 assumed usable = raw/2').")
+    workload: str = Field(default="general", description="Inferred role: 'sql' | 'web' | 'app' | 'cache' | 'queue' | 'file' | 'ad' | 'general'")
+    recommended_azure_service: str = Field(
+        default="Azure Virtual Machine",
+        description="Target Azure service under the chosen migration strategy (e.g. 'Azure Virtual Machine', 'Azure SQL Managed Instance', 'Azure App Service', 'Azure Cache for Redis').",
+    )
+    notes: str = Field(default="", description="Any caveats about the extraction (e.g. 'RAID 10 assumed usable = raw/2', refactor effort for PaaS).")
 
 
 class DirectExtraction(BaseModel):
@@ -195,10 +200,20 @@ def ai_extract_direct(
     sheets: dict[str, pd.DataFrame],
     filename: str,
     api_key: str,
+    strategy_hint: str = "",
 ) -> DirectExtraction:
     """Claude reads the whole file and produces a list of VMs."""
     preview = _build_preview(sheets, sample_rows=None)
     client = anthropic.Anthropic(api_key=api_key)
+
+    user_content = (
+        f"File: {filename}\n\n"
+        f"Here is the full contents of every sheet.\n\n"
+        f"{preview}\n\n"
+    )
+    if strategy_hint:
+        user_content += f"Migration strategy guidance:\n{strategy_hint}\n\n"
+    user_content += "Extract every server/VM and return the normalized list."
 
     response = client.messages.parse(
         model=MODEL,
@@ -206,17 +221,7 @@ def ai_extract_direct(
         system=[
             {"type": "text", "text": DIRECT_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
         ],
-        messages=[
-            {
-                "role": "user",
-                "content": (
-                    f"File: {filename}\n\n"
-                    f"Here is the full contents of every sheet.\n\n"
-                    f"{preview}\n\n"
-                    "Extract every server/VM and return the normalized list."
-                ),
-            }
-        ],
+        messages=[{"role": "user", "content": user_content}],
         output_format=DirectExtraction,
     )
     return response.parsed_output
@@ -229,6 +234,10 @@ def _to_inventory_items(extraction: DirectExtraction, include_powered_off: bool)
             continue
         if not x.name or (x.vcpu <= 0 and x.memory_gb <= 0):
             continue
+        combined_notes = x.notes or ""
+        if x.recommended_azure_service and x.recommended_azure_service != "Azure Virtual Machine":
+            tag = f"PaaS target: {x.recommended_azure_service}"
+            combined_notes = f"{tag}. {combined_notes}".strip()
         items.append(
             InventoryItem(
                 name=x.name,
@@ -238,7 +247,7 @@ def _to_inventory_items(extraction: DirectExtraction, include_powered_off: bool)
                 os=x.os or "Linux",
                 environment=x.environment or "prod",
                 powerstate=x.powerstate or "poweredOn",
-                notes=x.notes or "",
+                notes=combined_notes,
             )
         )
     return items
@@ -347,6 +356,7 @@ def ai_parse_inventory(
     filename: str,
     api_key: str,
     include_powered_off: bool = False,
+    strategy_hint: str = "",
 ):
     """One-shot parser. Returns (items, mode_str, spec) where:
       - mode_str is "direct" or "mapping"
@@ -356,7 +366,7 @@ def ai_parse_inventory(
     total_rows = sum(len(df) for df in sheets.values())
 
     if total_rows <= DIRECT_MODE_ROW_CAP:
-        extraction = ai_extract_direct(sheets, filename, api_key)
+        extraction = ai_extract_direct(sheets, filename, api_key, strategy_hint=strategy_hint)
         items = _to_inventory_items(extraction, include_powered_off=include_powered_off)
         return items, "direct", extraction
 

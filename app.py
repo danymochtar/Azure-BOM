@@ -5,7 +5,6 @@ Run:
 """
 from __future__ import annotations
 
-import io
 import traceback
 from pathlib import Path
 
@@ -13,12 +12,19 @@ import pandas as pd
 import streamlit as st
 
 from src.analysis import build_compute_bom, aggregate_vm_count
+from src.architecture import (
+    MIGRATION_STRATEGIES,
+    SECURITY_TIERS,
+    apply_ha_multiplier,
+    build_bcdr_bom,
+    build_ha_bom,
+    build_security_tier_bom,
+    strategy_guidance,
+)
 from src.constants import AZURE_REGIONS, CURRENCIES, DEFAULT_REGION, DEFAULT_CURRENCY
 from src.landing_zone import (
     LANDING_ZONE_COMPONENTS,
-    DEFENDER_PLANS,
     build_landing_zone_bom,
-    build_defender_bom,
 )
 from src.output import (
     build_excel_bom,
@@ -33,8 +39,9 @@ st.set_page_config(page_title="Azure BOM Generator", page_icon="AZ", layout="wid
 
 st.title("Azure BOM Generator")
 st.caption(
-    "Upload an on-prem inventory (RVTools, Excel, or CSV), add a basic landing "
-    "zone and Defender for Cloud, and export an Azure BOM with live retail pricing."
+    "Upload an on-prem inventory (any format). Choose a migration strategy "
+    "and which architecture pillars to include. Export an Azure BOM with "
+    "live retail pricing."
 )
 
 # ---------------- Sidebar controls ----------------
@@ -43,6 +50,28 @@ with st.sidebar:
     region = st.selectbox("Azure region", AZURE_REGIONS, index=AZURE_REGIONS.index(DEFAULT_REGION))
     currency = st.selectbox("Currency", CURRENCIES, index=CURRENCIES.index(DEFAULT_CURRENCY))
 
+    st.subheader("Migration strategy")
+    strategy_key = st.radio(
+        "Target architecture",
+        list(MIGRATION_STRATEGIES.keys()),
+        format_func=lambda k: MIGRATION_STRATEGIES[k]["label"],
+        index=0,
+    )
+    st.caption(MIGRATION_STRATEGIES[strategy_key]["description"])
+
+    st.subheader("Include in BOM")
+    include_lz = st.checkbox("Landing Zone (hub network, Firewall, Bastion, VPN, Key Vault, Log Analytics)", value=True)
+    include_ha = st.checkbox("High Availability (2x compute, Standard Load Balancer)", value=False)
+    include_bcdr = st.checkbox("BCDR (Azure Site Recovery + replicated backup)", value=False)
+    security_tier = st.radio(
+        "Security tier",
+        list(SECURITY_TIERS.keys()),
+        format_func=lambda k: SECURITY_TIERS[k]["label"],
+        index=1,
+    )
+    st.caption(SECURITY_TIERS[security_tier]["description"])
+
+    st.divider()
     st.subheader("Sizing")
     headroom = st.slider("Sizing headroom (multiplier on source specs)", 1.0, 2.0, 1.3, step=0.05)
     disk_tier = st.selectbox("Default disk tier", ["Premium SSD", "Standard SSD", "Standard HDD"])
@@ -52,7 +81,7 @@ with st.sidebar:
     st.subheader("AI parser")
     st.caption(
         "Let Claude read any inventory format — arbitrary column names, "
-        "custom layouts, mixed units. Falls back to the heuristic parser if off."
+        "pivoted layouts, free-text specs, mixed units."
     )
     use_ai = st.checkbox("Use AI parser (Claude Opus 4.7)", value=True)
     _default_key = ""
@@ -64,17 +93,17 @@ with st.sidebar:
         "Anthropic API key",
         type="password",
         value=_default_key,
-        help="Get one at console.anthropic.com. Can also be set via ANTHROPIC_API_KEY in .streamlit/secrets.toml.",
+        help="Get one at console.anthropic.com or set ANTHROPIC_API_KEY in .streamlit/secrets.toml.",
     )
 
-    st.subheader("Landing zone")
-    lz_selected = []
-    lz_overrides = {}
-    for comp in LANDING_ZONE_COMPONENTS:
-        on = st.checkbox(f"{comp.resource}", value=comp.default_enabled, key=f"lz_{comp.key}")
-        if on:
-            lz_selected.append(comp.key)
-            with st.expander(f"Adjust: {comp.resource}", expanded=False):
+    with st.expander("Advanced: landing-zone components", expanded=False):
+        lz_selected = []
+        lz_overrides = {}
+        for comp in LANDING_ZONE_COMPONENTS:
+            default_on = comp.default_enabled and include_lz
+            on = st.checkbox(f"{comp.resource}", value=default_on, key=f"lz_{comp.key}")
+            if on:
+                lz_selected.append(comp.key)
                 lz_overrides[comp.key] = st.number_input(
                     f"Quantity ({comp.unit})",
                     min_value=0.0,
@@ -83,28 +112,12 @@ with st.sidebar:
                 )
                 st.caption(comp.notes)
 
-    st.subheader("Defender for Cloud")
-    defender_selected = []
-    defender_counts = {}
-    for plan in DEFENDER_PLANS:
-        on = st.checkbox(f"{plan.resource}", value=plan.default_enabled, key=f"df_{plan.key}")
-        if on:
-            defender_selected.append(plan.key)
-            if plan.count_source == "manual":
-                defender_counts[plan.key] = st.number_input(
-                    f"{plan.resource} — {plan.unit}",
-                    min_value=0.0,
-                    value=0.0,
-                    key=f"df_qty_{plan.key}",
-                )
-            st.caption(plan.notes)
-
 # ---------------- Main: upload ----------------
 st.subheader("1. Upload inventory")
 col_u1, col_u2 = st.columns([2, 1])
 with col_u1:
     uploaded = st.file_uploader(
-        "RVTools .xlsx, generic Excel (.xlsx/.xls), or CSV",
+        "RVTools .xlsx, Excel (.xlsx/.xls), or CSV — any layout.",
         type=["xlsx", "xls", "csv"],
     )
 with col_u2:
@@ -113,7 +126,7 @@ with col_u2:
 
 items = []
 fmt = None
-ai_mapping = None
+ai_spec = None
 
 
 def _parse_with_fallback(data: bytes, filename: str):
@@ -122,20 +135,20 @@ def _parse_with_fallback(data: bytes, filename: str):
         try:
             with st.spinner("Claude is reading your inventory..."):
                 ai_items, mode, spec = ai_parse_inventory(
-                    data, filename, anthropic_key, include_powered_off=include_off
+                    data,
+                    filename,
+                    anthropic_key,
+                    include_powered_off=include_off,
+                    strategy_hint=strategy_guidance(strategy_key),
                 )
             if mode == "direct":
                 st.success(
-                    f"AI extracted {len(ai_items)} servers directly from the file. "
-                    f"{spec.summary}"
+                    f"AI extracted {len(ai_items)} servers directly. {spec.summary}"
                 )
             else:
                 st.success(
                     f"AI mapped and parsed {len(ai_items)} items from sheet "
-                    f"`{spec.sheet_name}`. Columns: name=`{spec.name_col}`, "
-                    f"vCPU=`{spec.vcpu_col}`, memory=`{spec.memory_col}` "
-                    f"({spec.memory_unit}), storage=`{spec.storage_col}` "
-                    f"({spec.storage_unit})."
+                    f"`{spec.sheet_name}`."
                 )
                 if spec.notes:
                     st.info(f"AI notes: {spec.notes}")
@@ -153,7 +166,7 @@ def _parse_with_fallback(data: bytes, filename: str):
 
 if uploaded is not None:
     try:
-        items, fmt, ai_mapping = _parse_with_fallback(uploaded.read(), uploaded.name)
+        items, fmt, ai_spec = _parse_with_fallback(uploaded.read(), uploaded.name)
         if fmt != "ai":
             st.success(f"Parsed {len(items)} items from `{uploaded.name}` (format: {fmt}).")
     except Exception as e:
@@ -169,9 +182,9 @@ if use_sample:
 
 if items:
     st.subheader("2. Parsed inventory")
-    if ai_mapping is not None:
+    if ai_spec is not None:
         with st.expander("AI extraction details", expanded=False):
-            st.json(ai_mapping.model_dump())
+            st.json(ai_spec.model_dump())
     inv_df = pd.DataFrame([{
         "Name": i.name,
         "vCPU": i.vcpu,
@@ -180,10 +193,18 @@ if items:
         "OS": i.os,
         "Power": i.powerstate,
         "Environment": i.environment,
+        "Notes": i.notes,
     } for i in items])
     st.dataframe(inv_df, use_container_width=True, hide_index=True)
 
     st.subheader("3. Generate BOM")
+    st.caption(
+        f"Strategy: **{MIGRATION_STRATEGIES[strategy_key]['label']}** · "
+        f"LZ: **{'on' if include_lz else 'off'}** · "
+        f"HA: **{'on' if include_ha else 'off'}** · "
+        f"BCDR: **{'on' if include_bcdr else 'off'}** · "
+        f"Security: **{SECURITY_TIERS[security_tier]['label']}**"
+    )
     if st.button("Generate Azure BOM", type="primary"):
         with st.spinner("Calling Azure Retail Prices API and building BOM..."):
             client = RetailPricesClient(currency=currency)
@@ -196,21 +217,38 @@ if items:
                 disk_tier=disk_tier,
                 os_override=os_mode,
             )
-            lz_lines = build_landing_zone_bom(
-                client=client,
-                region=region,
-                enabled_keys=lz_selected,
-                quantity_overrides=lz_overrides,
-            )
+
+            # HA — duplicate compute/storage lines and add Load Balancer
+            ha_extra: list = []
+            if include_ha:
+                compute_lines = apply_ha_multiplier(compute_lines, factor=2)
+                ha_extra = build_ha_bom(client=client, region=region)
+
+            # Landing zone
+            lz_lines: list = []
+            if include_lz and lz_selected:
+                lz_lines = build_landing_zone_bom(
+                    client=client,
+                    region=region,
+                    enabled_keys=lz_selected,
+                    quantity_overrides=lz_overrides,
+                )
+
+            # BCDR
+            bcdr_lines: list = []
+            if include_bcdr:
+                bcdr_lines = build_bcdr_bom(client=client, region=region, items=items)
+
+            # Security tier (replaces individual Defender checkboxes)
             vm_count = aggregate_vm_count(items)
-            df_lines = build_defender_bom(
+            sec_lines = build_security_tier_bom(
                 client=client,
                 region=region,
-                enabled_keys=defender_selected,
+                tier=security_tier,
                 vm_count=vm_count,
-                manual_counts=defender_counts,
             )
-            all_lines = compute_lines + lz_lines + df_lines
+
+            all_lines = compute_lines + ha_extra + lz_lines + bcdr_lines + sec_lines
 
         if client._last_error:
             st.warning(
@@ -280,8 +318,8 @@ if "bom_lines" in st.session_state:
     st.subheader("6. Azure Pricing Calculator links")
     st.caption(
         "Microsoft's calculator requires sign-in to save a shareable estimate, "
-        "so we link to the per-product calculator pages for the resources in "
-        "your BOM. Combine with the JSON above to reproduce the estimate."
+        "so we link to per-product calculator pages for the resources in your "
+        "BOM. Combine with the JSON above to reproduce the estimate."
     )
     for link in build_pricing_calculator_links(lines):
         st.markdown(f"- [{link['label']}]({link['url']})")
