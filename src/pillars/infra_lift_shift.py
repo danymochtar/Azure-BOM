@@ -21,7 +21,12 @@ from ..architecture import (
     strategy_guidance,
 )
 from ..constants import AZURE_REGIONS
-from ..landing_zone import LANDING_ZONE_COMPONENTS, build_landing_zone_bom
+from ..landing_zone import (
+    LANDING_ZONE_COMPONENTS,
+    LZ_PRESETS,
+    LZ_CATEGORY_ORDER,
+    build_landing_zone_bom,
+)
 from ..models import BomLine
 from ..parsers import ai_parse_inventory, parse_inventory
 from ..parsers.content import kind_from_name
@@ -267,56 +272,155 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
         } for i in items])
         st.dataframe(inv_df, use_container_width=True, hide_index=True)
 
-    # ----- LZ component checkboxes -----
+    # ----- LZ component checkboxes (CAF-grouped + preset) -----
     lz_selected: List[str] = []
     backup_pct = int(prefs.get("backup_pct", 40))
     la_mb_per_vm_per_day = int(prefs.get("la_mb_per_vm_per_day", 200))
     bandwidth_gb = int(prefs.get("bandwidth_gb", 200))
     waf_capacity_units = int(prefs.get("waf_capacity_units", 2))
     firewall_gb = int(prefs.get("firewall_gb_processed", 0))
+    private_endpoint_count = int(prefs.get("private_endpoint_count", 0))
+    vnet_peering_gb = int(prefs.get("vnet_peering_gb", 0))
+    nat_gateway_gb = int(prefs.get("nat_gateway_gb", 0))
+    automation_minutes = int(prefs.get("automation_minutes", 0))
+    app_insights_gb = float(prefs.get("app_insights_gb", 10.0))
+    flow_logs_gb = float(prefs.get("flow_logs_gb", 10.0))
     if include_lz:
         with st.expander("Landing zone components (tick what to include)", expanded=True):
             st.caption(
-                "Public IP vs ExpressRoute is typically an either/or for external "
-                "connectivity."
+                "Organised by CAF platform domain (Connectivity / Identity / "
+                "Management / Security / Shared Platform). Pick a preset to "
+                "pre-tick a canonical set, then refine individual boxes."
             )
+
+            # ---- Preset selector ----
+            _preset_keys = list(LZ_PRESETS.keys())
+            saved_preset = prefs.get("lz_preset", "Standard")
+            if saved_preset not in _preset_keys:
+                saved_preset = "Standard"
+            preset_choice = st.radio(
+                "CAF preset",
+                _preset_keys,
+                index=_preset_keys.index(saved_preset),
+                horizontal=True,
+                key="ls_lz_preset",
+                help=(
+                    "**Foundation** — minimum viable hub (firewall, bastion, "
+                    "public IP, log analytics, key vault, backup, egress). "
+                    "**Standard** — CAF default; adds edge (Front Door, Private "
+                    "Endpoints, DDoS IP), observability (App Insights, "
+                    "Automation, Flow Logs, Site Recovery), ACR Standard. "
+                    "**Enterprise** — full platform subs (Premium tiers, "
+                    "ExpressRoute, Entra Domain Services, geo-ACR, WAF, VPN)."
+                ),
+            )
+
+            # Detect a preset switch and re-seed the checkbox session state.
+            # `_lz_last_preset` persists across reruns so we only seed when
+            # the user actually changes the radio (otherwise manual toggles
+            # would be lost every rerun).
+            last_preset = st.session_state.get("_lz_last_preset")
+            preset_changed = last_preset != preset_choice
+            st.session_state["_lz_last_preset"] = preset_choice
+
             saved_lz = set(prefs.get("lz_selected", []))
+            preset_set = LZ_PRESETS.get(preset_choice, set())
+
+            def _initial_state(comp_key: str) -> bool:
+                if preset_changed or last_preset is None:
+                    # Preset drives initial tick state when user switches
+                    # presets, OR on the very first render when no prior
+                    # state exists.
+                    return comp_key in preset_set if preset_choice != "None" else (comp_key in saved_lz)
+                # No preset change → respect user's manual session state
+                # if present; else fall back to the saved preferences.
+                return st.session_state.get(f"ls_lz_{comp_key}", comp_key in saved_lz)
+
+            # ---- Category-grouped checkbox grid ----
+            comps_by_cat: dict = {}
             for comp in LANDING_ZONE_COMPONENTS:
-                default_on = (comp.key in saved_lz) if saved_lz else comp.default_enabled
-                on = st.checkbox(comp.resource, value=default_on, key=f"ls_lz_{comp.key}")
-                if on:
-                    lz_selected.append(comp.key)
-            backup_pct = st.slider("Azure Backup — % of total disk", 0, 200, backup_pct, 5)
-            la_mb_per_vm_per_day = st.number_input(
-                "Log Analytics — MB/day per VM",
-                min_value=0, max_value=5000, value=la_mb_per_vm_per_day, step=50,
-            )
-            bandwidth_gb = st.number_input(
-                "Bandwidth egress — TOTAL GB/month (first 100 GB free; tiered)",
-                min_value=0, max_value=10_000_000, value=bandwidth_gb, step=50,
-                help=(
-                    "Total outbound data transfer per month. Azure applies "
-                    "tiered pricing: 0-10 TB full rate, 10-50 TB ~5% off, "
-                    "50-150 TB ~20% off, 150-500 TB ~45% off, 500+ TB ~55% off."
-                ),
-            )
-            waf_capacity_units = st.number_input(
-                "App Gateway WAF v2 — Capacity Units (avg)",
-                min_value=0, max_value=125, value=int(prefs.get("waf_capacity_units", 2)), step=1,
-                help=(
-                    "Azure Pricing Calculator bills WAF v2 on base instance "
-                    "hours PLUS Capacity Units. Typical: 2-4 CU."
-                ),
-            )
-            firewall_gb = st.number_input(
-                "Azure Firewall — data processed (GB/month)",
-                min_value=0, max_value=10_000_000,
-                value=int(prefs.get("firewall_gb_processed", 0)), step=100,
-                help=(
-                    "Per-GB processed charge on top of the deployment hour. "
-                    "Leave 0 if the firewall only handles hub idle traffic."
-                ),
-            )
+                comps_by_cat.setdefault(comp.category, []).append(comp)
+
+            for cat in LZ_CATEGORY_ORDER:
+                cat_comps = comps_by_cat.get(cat, [])
+                if not cat_comps:
+                    continue
+                st.markdown(f"**{cat}**")
+                cols = st.columns(2)
+                for i, comp in enumerate(cat_comps):
+                    widget_key = f"ls_lz_{comp.key}"
+                    if preset_changed:
+                        st.session_state[widget_key] = (comp.key in preset_set)
+                    on = cols[i % 2].checkbox(
+                        comp.resource,
+                        value=_initial_state(comp.key),
+                        key=widget_key,
+                        help=comp.notes or None,
+                    )
+                    if on:
+                        lz_selected.append(comp.key)
+
+            # ---- Derived-quantity sliders / inputs ----
+            st.markdown("**Quantities**")
+            c1, c2 = st.columns(2)
+            with c1:
+                backup_pct = st.slider("Azure Backup — % of total disk", 0, 200, backup_pct, 5)
+                la_mb_per_vm_per_day = st.number_input(
+                    "Log Analytics — MB/day per VM",
+                    min_value=0, max_value=5000, value=la_mb_per_vm_per_day, step=50,
+                )
+                bandwidth_gb = st.number_input(
+                    "Bandwidth egress — TOTAL GB/month (first 100 GB free; tiered)",
+                    min_value=0, max_value=10_000_000, value=bandwidth_gb, step=50,
+                    help=(
+                        "Total outbound data transfer per month. Azure applies "
+                        "tiered pricing: 0-10 TB full rate, 10-50 TB ~5% off, "
+                        "50-150 TB ~20% off, 150-500 TB ~45% off, 500+ TB ~55% off."
+                    ),
+                )
+                waf_capacity_units = st.number_input(
+                    "App Gateway WAF v2 — Capacity Units (avg)",
+                    min_value=0, max_value=125, value=int(prefs.get("waf_capacity_units", 2)), step=1,
+                    help=(
+                        "Azure Pricing Calculator bills WAF v2 on base instance "
+                        "hours PLUS Capacity Units. Typical: 2-4 CU."
+                    ),
+                )
+                firewall_gb = st.number_input(
+                    "Azure Firewall — data processed (GB/month)",
+                    min_value=0, max_value=10_000_000,
+                    value=int(prefs.get("firewall_gb_processed", 0)), step=100,
+                    help=(
+                        "Per-GB processed charge on top of the deployment hour. "
+                        "Leave 0 if the firewall only handles hub idle traffic."
+                    ),
+                )
+            with c2:
+                private_endpoint_count = st.number_input(
+                    "Private Endpoints — count",
+                    min_value=0, max_value=2000, value=private_endpoint_count, step=1,
+                    help="Each endpoint is billed at the per-hour rate × 730.",
+                )
+                vnet_peering_gb = st.number_input(
+                    "VNet peering — outbound GB/month",
+                    min_value=0, max_value=10_000_000, value=vnet_peering_gb, step=50,
+                )
+                nat_gateway_gb = st.number_input(
+                    "NAT Gateway — data processed GB/month",
+                    min_value=0, max_value=10_000_000, value=nat_gateway_gb, step=50,
+                )
+                automation_minutes = st.number_input(
+                    "Automation — runbook minutes/month (first 500 free)",
+                    min_value=0, max_value=200_000, value=automation_minutes, step=100,
+                )
+                app_insights_gb = st.number_input(
+                    "Application Insights — GB ingested/month (5 GB free)",
+                    min_value=0.0, max_value=50_000.0, value=float(app_insights_gb), step=1.0,
+                )
+                flow_logs_gb = st.number_input(
+                    "NSG Flow Logs — GB collected/month",
+                    min_value=0.0, max_value=50_000.0, value=float(flow_logs_gb), step=1.0,
+                )
 
     # ----- Exports for cross-pillar wiring -----
     vm_count = aggregate_vm_count(items) if items else 0
@@ -333,11 +437,18 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
         "include_bcdr": include_bcdr,
         "secondary_region": secondary_region,
         "lz_selected": lz_selected,
+        "lz_preset": preset_choice if include_lz else prefs.get("lz_preset", "Standard"),
         "backup_pct": backup_pct,
         "la_mb_per_vm_per_day": la_mb_per_vm_per_day,
         "bandwidth_gb": bandwidth_gb,
         "waf_capacity_units": waf_capacity_units,
         "firewall_gb_processed": firewall_gb,
+        "private_endpoint_count": private_endpoint_count,
+        "vnet_peering_gb": vnet_peering_gb,
+        "nat_gateway_gb": nat_gateway_gb,
+        "automation_minutes": automation_minutes,
+        "app_insights_gb": float(app_insights_gb),
+        "flow_logs_gb": float(flow_logs_gb),
         "__exports__": {
             "vm_count": vm_count,
             "la_gb": la_gb,
@@ -381,12 +492,23 @@ def build_bom(client, region: str, inputs: dict, app_name: str, pricing_mode: st
         "app_gateway_waf_cu": float(inputs.get("waf_capacity_units", 2)) * 730.0,
         # Azure Firewall per-GB processed
         "firewall_data": float(inputs.get("firewall_gb_processed", 0)),
+        # CAF additions with user-supplied quantities:
+        "private_endpoint": float(inputs.get("private_endpoint_count", 0)) * 730.0,
+        "vnet_peering_egress": float(inputs.get("vnet_peering_gb", 0)),
+        "nat_gateway_data": float(inputs.get("nat_gateway_gb", 0)),
+        "automation_account": float(inputs.get("automation_minutes", 0)),
+        "app_insights": float(inputs.get("app_insights_gb", 0.0)),
+        "network_watcher_flow_logs": float(inputs.get("flow_logs_gb", 0.0)),
+        # Site Recovery per-VM instance fee — auto from inventory
+        "site_recovery": float(vm_count),
     }
 
     # Auto-enable derived LZ components that pair with primary toggles:
-    #   recovery_vault    → also adds recovery_vault_instances
-    #   app_gateway_waf   → also adds app_gateway_waf_cu (if CU input > 0)
-    #   firewall          → also adds firewall_data (if GB input > 0)
+    #   recovery_vault     → also adds recovery_vault_instances (per-VM fee)
+    #   app_gateway_waf    → also adds app_gateway_waf_cu (if CU input > 0)
+    #   firewall           → also adds firewall_data (if GB input > 0)
+    #   private_endpoint   → only added when the count input > 0
+    #   site_recovery      → only added when there are VMs to protect
     auto_enabled = list(inputs.get("lz_selected") or [])
     if "recovery_vault" in auto_enabled and "recovery_vault_instances" not in auto_enabled and vm_count > 0:
         auto_enabled.append("recovery_vault_instances")
@@ -396,6 +518,11 @@ def build_bom(client, region: str, inputs: dict, app_name: str, pricing_mode: st
     if "firewall" in auto_enabled and inputs.get("firewall_gb_processed", 0) > 0 \
             and "firewall_data" not in auto_enabled:
         auto_enabled.append("firewall_data")
+    # Don't cost a $0 per-endpoint-hour line when the count is 0
+    if "private_endpoint" in auto_enabled and inputs.get("private_endpoint_count", 0) <= 0:
+        auto_enabled = [k for k in auto_enabled if k != "private_endpoint"]
+    if "site_recovery" in auto_enabled and vm_count <= 0:
+        auto_enabled = [k for k in auto_enabled if k != "site_recovery"]
 
     if inputs.get("include_lz") and auto_enabled:
         all_lines.extend(

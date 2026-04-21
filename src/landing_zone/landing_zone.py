@@ -1,7 +1,18 @@
-"""Basic enterprise-scale landing zone components priced via Retail Prices API.
+"""Azure Cloud Adoption Framework (CAF) landing-zone catalogue, priced
+via the Retail Prices API.
 
-These are minimums for a hub-spoke style LZ. Customers typically resize based
-on throughput, log volume, and user counts — adjust quantities in the UI.
+Components are tagged with a `category` that mirrors CAF's platform-
+subscription split: **Connectivity** (hub networking, edge), **Identity**
+(Entra Domain Services, B2C), **Management & Observability** (Log
+Analytics, Monitor, Automation, Backup, Site Recovery, Network Watcher),
+**Security** (Key Vault; Defender + Sentinel live in the `azure_security`
+pillar and are not duplicated here), and **Shared Platform** (Container
+Registry, DNS resolver).
+
+Three presets (`LZ_PRESETS`) give the reviewer a one-click "CAF
+Foundation / Standard / Enterprise" scaffolding — they pre-tick a
+matching subset of component keys. The UI still renders every checkbox
+so individual toggles stack on top of the preset.
 """
 from __future__ import annotations
 
@@ -52,7 +63,7 @@ def _contains_all(*substrs: str):
 LANDING_ZONE_COMPONENTS: List[LzComponent] = [
     LzComponent(
         key="public_ip",
-        category="Networking",
+        category="Connectivity",
         resource="Public IP Address (Standard, static)",
         default_enabled=True,
         quantity=HOURS_PER_MONTH,
@@ -71,7 +82,7 @@ LANDING_ZONE_COMPONENTS: List[LzComponent] = [
     ),
     LzComponent(
         key="expressroute_circuit",
-        category="Networking",
+        category="Connectivity",
         resource="ExpressRoute circuit (1 Gbps, metered)",
         default_enabled=False,
         quantity=1.0,
@@ -90,7 +101,7 @@ LANDING_ZONE_COMPONENTS: List[LzComponent] = [
     ),
     LzComponent(
         key="nat_gateway",
-        category="Networking",
+        category="Connectivity",
         resource="NAT Gateway (Standard)",
         default_enabled=False,
         quantity=HOURS_PER_MONTH,
@@ -108,7 +119,7 @@ LANDING_ZONE_COMPONENTS: List[LzComponent] = [
     ),
     LzComponent(
         key="expressroute_gateway",
-        category="Networking",
+        category="Connectivity",
         resource="ExpressRoute Gateway (ErGw1AZ, zone-redundant)",
         default_enabled=False,
         quantity=HOURS_PER_MONTH,
@@ -126,7 +137,7 @@ LANDING_ZONE_COMPONENTS: List[LzComponent] = [
     ),
     LzComponent(
         key="bandwidth_egress",
-        category="Networking",
+        category="Connectivity",
         resource="Bandwidth egress (outbound, standard tier)",
         default_enabled=True,
         quantity=200.0,
@@ -158,7 +169,7 @@ LANDING_ZONE_COMPONENTS: List[LzComponent] = [
     ),
     LzComponent(
         key="app_gateway_waf",
-        category="Networking",
+        category="Connectivity",
         resource="Application Gateway WAF v2 (1 instance)",
         default_enabled=False,
         quantity=HOURS_PER_MONTH,
@@ -176,7 +187,7 @@ LANDING_ZONE_COMPONENTS: List[LzComponent] = [
     ),
     LzComponent(
         key="firewall",
-        category="Networking",
+        category="Connectivity",
         resource="Azure Firewall (Standard)",
         default_enabled=True,
         quantity=HOURS_PER_MONTH,
@@ -190,7 +201,7 @@ LANDING_ZONE_COMPONENTS: List[LzComponent] = [
     ),
     LzComponent(
         key="bastion",
-        category="Networking",
+        category="Connectivity",
         resource="Azure Bastion (Basic)",
         default_enabled=True,
         quantity=HOURS_PER_MONTH,
@@ -204,7 +215,7 @@ LANDING_ZONE_COMPONENTS: List[LzComponent] = [
     ),
     LzComponent(
         key="vpn_gw",
-        category="Networking",
+        category="Connectivity",
         resource="VPN Gateway (VpnGw1)",
         default_enabled=True,
         quantity=HOURS_PER_MONTH,
@@ -218,7 +229,7 @@ LANDING_ZONE_COMPONENTS: List[LzComponent] = [
     ),
     LzComponent(
         key="log_analytics",
-        category="Management",
+        category="Management & Observability",
         resource="Log Analytics (PAYG ingestion)",
         default_enabled=True,
         quantity=50.0,
@@ -246,7 +257,7 @@ LANDING_ZONE_COMPONENTS: List[LzComponent] = [
     ),
     LzComponent(
         key="recovery_vault",
-        category="Management",
+        category="Management & Observability",
         resource="Azure Backup storage (LRS/GRS)",
         default_enabled=False,
         quantity=50.0,
@@ -265,7 +276,7 @@ LANDING_ZONE_COMPONENTS: List[LzComponent] = [
     ),
     LzComponent(
         key="recovery_vault_instances",
-        category="Management",
+        category="Management & Observability",
         resource="Azure Backup — protected instances",
         default_enabled=False,
         quantity=1.0,
@@ -283,7 +294,7 @@ LANDING_ZONE_COMPONENTS: List[LzComponent] = [
     ),
     LzComponent(
         key="app_gateway_waf_cu",
-        category="Networking",
+        category="Connectivity",
         resource="Application Gateway WAF v2 — Capacity Units",
         default_enabled=False,
         quantity=2.0 * HOURS_PER_MONTH,   # 2 CU × 730 h default
@@ -301,7 +312,7 @@ LANDING_ZONE_COMPONENTS: List[LzComponent] = [
     ),
     LzComponent(
         key="firewall_data",
-        category="Networking",
+        category="Connectivity",
         resource="Azure Firewall — data processed",
         default_enabled=False,
         quantity=0.0,
@@ -317,6 +328,325 @@ LANDING_ZONE_COMPONENTS: List[LzComponent] = [
             "bill (useful if the firewall only sees idle hub traffic)."
         ),
     ),
+    # -----------------------------------------------------------------------
+    # CAF additions — Connectivity (edge + DDoS + private networking)
+    # -----------------------------------------------------------------------
+    LzComponent(
+        key="ddos_ip_protection",
+        category="Security",
+        resource="DDoS Protection — IP Protection (per public IP)",
+        default_enabled=False,
+        quantity=1.0,
+        unit="IP/month",
+        build_filter=lambda region: (
+            "serviceName eq 'DDoS Protection' and priceType eq 'Consumption'"
+        ),
+        pick=_contains("ip protection"),
+        notes=(
+            "Per-public-IP DDoS mitigation. Cheaper entry tier than the "
+            "Network Protection plan. Quantity = number of protected public IPs."
+        ),
+    ),
+    LzComponent(
+        key="ddos_network_protection",
+        category="Security",
+        resource="DDoS Protection — Network Protection (subscription plan)",
+        default_enabled=False,
+        quantity=1.0,
+        unit="plan/month",
+        build_filter=lambda region: (
+            "serviceName eq 'DDoS Protection' and priceType eq 'Consumption'"
+        ),
+        pick=_contains("network protection"),
+        notes=(
+            "Flat per-subscription DDoS plan covering up to 100 public IPs. "
+            "Required for enterprise-scale LZ hubs with internet exposure."
+        ),
+    ),
+    LzComponent(
+        key="front_door_standard",
+        category="Connectivity",
+        resource="Azure Front Door — Standard (base fee)",
+        default_enabled=False,
+        quantity=1.0,
+        unit="profile/month",
+        build_filter=lambda region: (
+            "serviceName eq 'Azure Front Door' and priceType eq 'Consumption'"
+        ),
+        pick=_contains_all("standard", "base"),
+        notes="Edge CDN + WAF. Request + egress charges are extra.",
+    ),
+    LzComponent(
+        key="front_door_premium",
+        category="Connectivity",
+        resource="Azure Front Door — Premium (base fee)",
+        default_enabled=False,
+        quantity=1.0,
+        unit="profile/month",
+        build_filter=lambda region: (
+            "serviceName eq 'Azure Front Door' and priceType eq 'Consumption'"
+        ),
+        pick=_contains_all("premium", "base"),
+        notes="Adds managed WAF + Private Link origin + bot protection.",
+    ),
+    LzComponent(
+        key="private_dns_resolver",
+        category="Connectivity",
+        resource="Private DNS Resolver (endpoint hours)",
+        default_enabled=False,
+        quantity=HOURS_PER_MONTH,   # 1 endpoint × 730 h; UI scales per endpoint count
+        unit="endpoint-hours",
+        build_filter=lambda region: (
+            f"serviceName eq 'Azure DNS' and armRegionName eq '{region}' "
+            f"and priceType eq 'Consumption'"
+        ),
+        pick=_contains("resolver"),
+        notes=(
+            "Hub DNS resolver for hybrid name-resolution. Typical deployment "
+            "= 2 endpoints (1 inbound + 1 outbound) × 730 h."
+        ),
+    ),
+    LzComponent(
+        key="private_endpoint",
+        category="Connectivity",
+        resource="Private Endpoint (hourly × count)",
+        default_enabled=False,
+        quantity=HOURS_PER_MONTH,   # 1 endpoint × 730 h; UI scales via count input
+        unit="endpoint-hours",
+        build_filter=lambda region: (
+            f"serviceName eq 'Virtual Network' and armRegionName eq '{region}' "
+            f"and priceType eq 'Consumption'"
+        ),
+        pick=_contains("private endpoint"),
+        notes=(
+            "Per-endpoint hourly charge for Private Link ingress. Data "
+            "processed is billed separately. Quantity auto-scales with the "
+            "'Private Endpoint count' input."
+        ),
+    ),
+    LzComponent(
+        key="vnet_peering_egress",
+        category="Connectivity",
+        resource="VNet peering — outbound data (GB)",
+        default_enabled=False,
+        quantity=0.0,
+        unit="GB",
+        build_filter=lambda region: (
+            f"serviceName eq 'Virtual Network' and armRegionName eq '{region}' "
+            f"and priceType eq 'Consumption'"
+        ),
+        pick=_contains("peering"),
+        notes=(
+            "Per-GB charge on inter-VNet peered traffic. Usually negligible "
+            "unless hub-spoke egress is high; tune on the LZ sliders."
+        ),
+    ),
+    LzComponent(
+        key="nat_gateway_data",
+        category="Connectivity",
+        resource="NAT Gateway — data processed (GB)",
+        default_enabled=False,
+        quantity=0.0,
+        unit="GB",
+        build_filter=lambda region: (
+            f"serviceName eq 'NAT Gateway' and armRegionName eq '{region}' "
+            f"and priceType eq 'Consumption'"
+        ),
+        pick=_contains("data processed"),
+        notes=(
+            "~$0.045/GB processed on top of the NAT Gateway hourly charge. "
+            "Raise the LZ 'NAT Gateway data' slider for production egress."
+        ),
+    ),
+    LzComponent(
+        key="firewall_premium",
+        category="Connectivity",
+        resource="Azure Firewall (Premium — IDPS/TLS)",
+        default_enabled=False,
+        quantity=HOURS_PER_MONTH,
+        unit="hours",
+        build_filter=lambda region: (
+            f"serviceName eq 'Azure Firewall' and armRegionName eq '{region}' "
+            f"and priceType eq 'Consumption'"
+        ),
+        pick=_contains_all("premium", "deployment"),
+        notes=(
+            "Premium tier adds IDPS + TLS inspection + URL filtering (~2× "
+            "Standard). Tick this OR `firewall` — not both."
+        ),
+    ),
+    # -----------------------------------------------------------------------
+    # CAF additions — Management & Observability
+    # -----------------------------------------------------------------------
+    LzComponent(
+        key="automation_account",
+        category="Management & Observability",
+        resource="Automation Account (process automation)",
+        default_enabled=False,
+        quantity=0.0,    # users provide expected runbook minutes/month
+        unit="minutes",
+        build_filter=lambda region: (
+            f"serviceName eq 'Automation' and armRegionName eq '{region}' "
+            f"and priceType eq 'Consumption'"
+        ),
+        pick=_contains("process automation"),
+        notes=(
+            "Per-minute runbook execution charge. First 500 min/month free. "
+            "Typical hub runs 2-5k min/month for patch + compliance jobs."
+        ),
+    ),
+    LzComponent(
+        key="site_recovery",
+        category="Management & Observability",
+        resource="Azure Site Recovery (protected instances)",
+        default_enabled=False,
+        quantity=0.0,    # auto-populated from lift-shift vm_count
+        unit="instance/month",
+        build_filter=lambda region: (
+            f"serviceName eq 'Azure Site Recovery' and armRegionName eq '{region}' "
+            f"and priceType eq 'Consumption'"
+        ),
+        pick=_contains("protected instance"),
+        notes=(
+            "Per-VM ASR replication fee (~$25/VM/mo). Storage + egress are "
+            "billed separately. Quantity auto-populates from the lift-shift "
+            "inventory when that pillar is active."
+        ),
+    ),
+    LzComponent(
+        key="app_insights",
+        category="Management & Observability",
+        resource="Application Insights (data ingested)",
+        default_enabled=False,
+        quantity=10.0,
+        unit="GB",
+        build_filter=lambda region: (
+            f"serviceName eq 'Azure Monitor' and armRegionName eq '{region}' "
+            f"and priceType eq 'Consumption'"
+        ),
+        pick=_contains_all("application insights", "data"),
+        notes=(
+            "App telemetry ingestion. First 5 GB/mo free per workspace. "
+            "Default 10 GB/mo for a small app; scale with active-user count."
+        ),
+    ),
+    LzComponent(
+        key="network_watcher_flow_logs",
+        category="Management & Observability",
+        resource="Network Watcher — NSG flow logs",
+        default_enabled=False,
+        quantity=10.0,
+        unit="GB",
+        build_filter=lambda region: (
+            f"serviceName eq 'Network Watcher' and armRegionName eq '{region}' "
+            f"and priceType eq 'Consumption'"
+        ),
+        pick=_contains("flow log"),
+        notes=(
+            "Per-GB flow-log collection. Traffic Analytics processing is "
+            "additional (via Log Analytics). 10 GB default = small env."
+        ),
+    ),
+    # -----------------------------------------------------------------------
+    # CAF additions — Identity
+    # -----------------------------------------------------------------------
+    LzComponent(
+        key="entra_domain_services",
+        category="Identity",
+        resource="Microsoft Entra Domain Services (Standard)",
+        default_enabled=False,
+        quantity=HOURS_PER_MONTH,
+        unit="hours",
+        build_filter=lambda region: (
+            f"serviceName eq 'Azure Active Directory Domain Services' "
+            f"and armRegionName eq '{region}' and priceType eq 'Consumption'"
+        ),
+        pick=_contains("standard"),
+        notes=(
+            "Managed domain for legacy workloads that need Kerberos / NTLM / "
+            "LDAP. Standard SKU; Enterprise/Premium are step-ups."
+        ),
+    ),
+    # -----------------------------------------------------------------------
+    # CAF additions — Shared Platform
+    # -----------------------------------------------------------------------
+    LzComponent(
+        key="acr_standard",
+        category="Shared Platform",
+        resource="Azure Container Registry — Standard",
+        default_enabled=False,
+        quantity=1.0,
+        unit="registry/month",
+        build_filter=lambda region: (
+            f"serviceName eq 'Container Registry' and armRegionName eq '{region}' "
+            f"and priceType eq 'Consumption'"
+        ),
+        pick=_contains("standard"),
+        notes="Typical dev/test registry; 100 GB included storage.",
+    ),
+    LzComponent(
+        key="acr_premium",
+        category="Shared Platform",
+        resource="Azure Container Registry — Premium (geo-replication)",
+        default_enabled=False,
+        quantity=1.0,
+        unit="registry/month",
+        build_filter=lambda region: (
+            f"serviceName eq 'Container Registry' and armRegionName eq '{region}' "
+            f"and priceType eq 'Consumption'"
+        ),
+        pick=_contains("premium"),
+        notes=(
+            "Required for geo-replication, content trust, private link. "
+            "Geo-replica regions are additional line items (not modelled here)."
+        ),
+    ),
+]
+
+
+# ---------------------------------------------------------------------------
+# CAF presets — one-click "Foundation / Standard / Enterprise" scaffolding.
+# Each preset is a superset of the previous one. Users can still toggle
+# individual checkboxes on top of a preset — the UI seeds session state
+# from the preset, then renders the widgets so manual overrides win.
+# ---------------------------------------------------------------------------
+
+_LZ_FOUNDATION = {
+    "public_ip", "firewall", "bastion", "nat_gateway",
+    "log_analytics", "key_vault", "recovery_vault",
+    "recovery_vault_instances", "bandwidth_egress",
+}
+
+_LZ_STANDARD = _LZ_FOUNDATION | {
+    "private_endpoint", "front_door_standard", "ddos_ip_protection",
+    "app_insights", "automation_account", "network_watcher_flow_logs",
+    "site_recovery", "acr_standard",
+}
+
+_LZ_ENTERPRISE = _LZ_STANDARD | {
+    "ddos_network_protection", "front_door_premium", "firewall_premium",
+    "private_dns_resolver", "vnet_peering_egress", "nat_gateway_data",
+    "expressroute_circuit", "expressroute_gateway",
+    "entra_domain_services", "acr_premium",
+    "app_gateway_waf", "app_gateway_waf_cu", "vpn_gw",
+    "firewall_data",
+}
+
+LZ_PRESETS: dict = {
+    "None":        set(),
+    "Foundation":  set(_LZ_FOUNDATION),
+    "Standard":    set(_LZ_STANDARD),
+    "Enterprise":  set(_LZ_ENTERPRISE),
+}
+
+
+# Display order for category-grouped UI rendering
+LZ_CATEGORY_ORDER: List[str] = [
+    "Connectivity",
+    "Identity",
+    "Management & Observability",
+    "Security",
+    "Shared Platform",
 ]
 
 
