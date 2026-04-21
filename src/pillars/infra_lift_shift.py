@@ -56,7 +56,35 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
             format_func=lambda k: MIGRATION_STRATEGIES[k]["label"],
             index=strategy_idx,
         )
-        headroom = st.slider("Sizing headroom", 1.0, 2.0, float(prefs.get("headroom", 1.3)), step=0.05)
+        # Sizing policy: default is 1:1 exact match; if the source spec
+        # doesn't line up with a catalog SKU the mapper falls back to the
+        # smallest / cheapest SKU whose capacity still covers the workload.
+        # Users can opt-in to a safety margin for noisy on-prem sizing data.
+        headroom_mode = st.radio(
+            "Sizing policy",
+            ["1:1 (exact match, else nearest cost-optimized)", "Add safety margin"],
+            index=0 if float(prefs.get("headroom", 1.0)) <= 1.001 else 1,
+            horizontal=False,
+            help=(
+                "1:1 matches the source spec to an Azure SKU with the same "
+                "vCPU + memory when possible (e.g. 4 vCPU / 16 GB → D4s v5). "
+                "If no exact match exists, the mapper picks the SMALLEST "
+                "SKU whose capacity still covers the spec (cheapest fit). "
+                "Pick 'Add safety margin' only when the source inventory "
+                "under-reports utilisation."
+            ),
+        )
+        if headroom_mode.startswith("1:1"):
+            headroom = 1.0
+            st.caption("Policy: 1:1 exact match → else nearest cost-optimized SKU.")
+        else:
+            headroom = st.slider(
+                "Safety margin (multiplier applied to vCPU + memory)",
+                1.05, 2.0,
+                max(1.05, float(prefs.get("headroom", 1.3))),
+                step=0.05,
+                help="1.1 = +10% padding; 1.3 = +30%; etc.",
+            )
         disk_opts = ["Premium SSD", "Standard SSD", "Standard HDD"]
         saved_disk = prefs.get("disk_tier", "Premium SSD")
         disk_tier = st.selectbox(
@@ -325,7 +353,7 @@ def build_bom(client, region: str, inputs: dict, app_name: str, pricing_mode: st
 
     compute_lines, mapping_rows = build_compute_bom(
         items=items, client=client, region=region,
-        headroom=inputs.get("headroom", 1.3),
+        headroom=inputs.get("headroom", 1.0),
         disk_tier=inputs.get("disk_tier", "Premium SSD"),
         os_override=inputs.get("os_mode", "as-detected"),
         app_name=app_name, pricing_mode=pricing_mode,

@@ -31,34 +31,66 @@ def _memory_to_cpu_ratio(item: InventoryItem) -> float:
     return (item.memory_gb / item.vcpu) if item.vcpu else 0.0
 
 
-def recommend_vm(item: InventoryItem, headroom: float = 1.3, prefer_burstable_cpu: int = 2) -> VmSku:
-    """Return the smallest SKU that satisfies required vCPU*headroom and memory*headroom.
+def recommend_vm(item: InventoryItem, headroom: float = 1.0, prefer_burstable_cpu: int = 2) -> VmSku:
+    """Right-size an on-prem VM to the closest Azure SKU.
 
-    - If item has <=prefer_burstable_cpu vCPU, burstable B-series is allowed.
-    - High memory/CPU ratios (>= 6) steer toward memory-optimized E-series.
+    Sizing policy:
+      1. **1:1 exact match.** If the catalog contains a SKU whose vCPU AND
+         memory equal the source spec, return it — no padding, no over-
+         provisioning. This is the common case for well-tagged RVTools
+         exports (e.g. 4 vCPU / 16 GB → D4s v5).
+      2. **Nearest cost-optimized fit.** If no exact match exists, return
+         the SMALLEST SKU whose capacity still covers the source spec
+         (vCPU >= item.vcpu AND memory_gb >= item.memory_gb). Picking the
+         smallest fitting SKU minimises cost while ensuring the workload
+         fits — the "nearest" in both size and price.
+
+    `headroom` defaults to 1.0 (1:1 sizing). Callers who deliberately want
+    a safety margin may pass 1.1 / 1.2 / etc. — the raw spec is multiplied
+    before the fit search. When headroom > 1.0, the exact-match fast path
+    is skipped (an exact match of the RAW spec isn't the user's intent
+    when they've asked for padding).
+
+    Family preference:
+      - Burstable B-series only for small (<=prefer_burstable_cpu vCPU)
+        low-memory workloads.
+      - Memory-optimized E-series when memory-to-CPU ratio >= 6.
+      - General D-series otherwise.
     """
+    ratio = _memory_to_cpu_ratio(item)
+
+    def family_score(sku: VmSku) -> int:
+        if sku.family == "burstable":
+            return 0 if item.vcpu <= prefer_burstable_cpu and item.memory_gb <= 32 else 3
+        if sku.family == "memory":
+            return 0 if ratio >= 6 else 2
+        return 1  # general
+
+    # --- 1:1 exact match (only when no deliberate headroom padding) ---
+    if abs(headroom - 1.0) < 1e-9:
+        exact = [
+            s for s in VM_CATALOG
+            if s.vcpu == int(item.vcpu) and abs(s.memory_gb - float(item.memory_gb)) < 0.5
+        ]
+        if exact:
+            exact.sort(key=lambda s: (family_score(s), s.priority))
+            return exact[0]
+
+    # --- Nearest cost-optimized fit ---
     req_cpu = max(1, int(round(item.vcpu * headroom)))
     req_mem = round(item.memory_gb * headroom, 2)
-    ratio = _memory_to_cpu_ratio(item)
 
     def fits(sku: VmSku) -> bool:
         return sku.vcpu >= req_cpu and sku.memory_gb >= req_mem
 
     candidates = [s for s in VM_CATALOG if fits(s)]
     if not candidates:
-        # Fall back: return the largest available so caller can flag it
+        # Larger than any catalog entry — return the biggest we have; caller
+        # can surface it in the UI as an under-sized recommendation.
         return max(VM_CATALOG, key=lambda s: (s.vcpu, s.memory_gb))
 
-    # Family preference based on workload shape
-    def family_score(sku: VmSku) -> int:
-        if sku.family == "burstable":
-            return 0 if item.vcpu <= prefer_burstable_cpu and item.memory_gb <= 32 else 3
-        if sku.family == "memory":
-            return 0 if ratio >= 6 else 2
-        # general
-        return 1
-
-    # Pick the smallest (by vcpu then memory) within the best family, with tie-break on priority
+    # Pick the smallest (by vcpu then memory) within the best family, with
+    # tie-break on priority. This is the cheapest SKU that still fits.
     candidates.sort(key=lambda s: (family_score(s), s.vcpu, s.memory_gb, s.priority))
     return candidates[0]
 

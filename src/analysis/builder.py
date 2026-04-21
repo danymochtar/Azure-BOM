@@ -36,7 +36,7 @@ def build_compute_bom(
     items: List[InventoryItem],
     client: RetailPricesClient,
     region: str,
-    headroom: float = 1.3,
+    headroom: float = 1.0,
     disk_tier: str = "Premium SSD",
     os_override: str = "as-detected",
     app_name: str = "",
