@@ -4,11 +4,14 @@ one of the five Azure pillars.
 Pillars:
     infra_lift_shift     — per-VM inventory, 1:1 migration
     infra_modernization  — App Service / AKS / Container Apps / APIM / Front Door
+                           + developer tooling (GitHub, Copilot, VS, Azure DevOps)
     data_platform        — Fabric / Synapse / Cosmos / Azure SQL / ADLS / ADF / Event Hubs
     ai_application       — Azure OpenAI / AI Search / ML / GPU / Cognitive Services
     azure_security       — Defender / Sentinel / WAF / Private Link / Purview / PIM
     hybrid_multicloud    — Azure Arc / Defender across AWS+GCP+on-prem / Arc-SQL or
                            Arc-WinServer licensing
+    m365_and_others      — M365 Backup/Archive, SharePoint Premium (Syntex),
+                           Copilot Studio, generic Azure-marketplace SaaS
     mixed                — multiple pillars are genuinely first-class
     unknown              — cannot classify confidently
 
@@ -85,6 +88,16 @@ of these five pillars (or `mixed` / `unknown`):
   "data centre consolidation", "Windows Server pay-as-you-go",
   "SQL Server pay-as-you-go via Arc".
 
+- **m365_and_others** — items billed through an Azure subscription that are
+  NOT workload infra: Microsoft 365 Backup (Syntex backup), M365 Archive,
+  SharePoint Premium / Syntex AI-transactions, Copilot Studio (prepaid
+  message packs + PAYG messages), and generic Azure-marketplace SaaS
+  (Confluent Cloud, Elastic Cloud, MongoDB Atlas, etc.). Signals:
+  "M365 Backup", "Microsoft 365 Backup", "M365 Archive", "Syntex",
+  "SharePoint Premium", "Copilot Studio", "Power Virtual Agents",
+  "tenant backup", "marketplace purchase", "Elastic Cloud on Azure",
+  "Confluent Cloud on Azure", "MongoDB Atlas on Azure".
+
 Rules:
 1. Pick the MOST SPECIFIC single pillar when possible. Only use `mixed` when
    multiple pillars are clearly described as first-class (not "VMs plus some
@@ -99,7 +112,12 @@ Rules:
      "app_gateway_waf", "bandwidth_egress", "log_analytics", "key_vault",
      "recovery_vault", "ha", "bcdr"
    - Modernization: "app_service", "aks", "container_apps", "api_management",
-     "front_door", "acr", "service_bus"
+     "front_door", "acr", "service_bus",
+     "github_enterprise", "github_advanced_security",
+     "github_copilot_business", "github_copilot_enterprise",
+     "visual_studio_pro", "visual_studio_enterprise",
+     "azdo_basic", "azdo_basic_test",
+     "azdo_hosted_pipeline", "azdo_selfhosted_pipeline"
    - Data: "fabric", "synapse", "cosmos_db", "azure_sql_db", "sql_mi",
      "adls_gen2", "adf", "event_hubs", "databricks", "power_bi",
      "postgres_flexible", "mysql_flexible", "redis_cache", "azure_files"
@@ -111,6 +129,8 @@ Rules:
    - Networking LZ: "nat_gateway"
    - Hybrid/Multicloud: "azure_arc", "defender_multicloud", "arc_sql_payg",
      "arc_winserver_payg", "arc_k8s", "arc_la_ingestion"
+   - M365 & Others: "m365_backup", "m365_archive", "sharepoint_premium",
+     "copilot_studio_pack_25k", "copilot_studio_payg", "other_marketplace"
 4. `signals` short phrases quoting evidence ("column 'SIEM EPS'",
    "sheet 'Model Inventory'", "mentions 'RAG pipeline'").
 5. Keep `summary` to one short sentence."""
@@ -118,7 +138,7 @@ Rules:
 
 class AssessmentProfile(BaseModel):
     workload_type: str = Field(
-        description="One of: infra_lift_shift | infra_modernization | data_platform | ai_application | azure_security | mixed | unknown"
+        description="One of: infra_lift_shift | infra_modernization | data_platform | ai_application | azure_security | hybrid_multicloud | m365_and_others | mixed | unknown"
     )
     confidence: float = Field(ge=0.0, le=1.0)
     complexity: str = Field(default="moderate", description="simple | moderate | complex")

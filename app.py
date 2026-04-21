@@ -235,6 +235,28 @@ with st.sidebar:
         "Anthropic does not train on API inputs per their terms."
     )
 
+    with st.expander("📥 Pre-assessment templates", expanded=False):
+        st.caption(
+            "Optional Excel templates, one per pillar. The infra template is "
+            "**not strict** — you can upload any doc (RVTools, Azure Migrate, "
+            "PDF, etc.) and the app will extract what's there. Use templates "
+            "if you want a clean starting point."
+        )
+        from src.output.templates import TEMPLATE_REGISTRY
+        for label, fname, builder in TEMPLATE_REGISTRY:
+            try:
+                blob = builder()
+            except Exception as te:
+                st.warning(f"Could not build {label}: {te}")
+                continue
+            st.download_button(
+                label=f"⬇ {label}",
+                data=blob,
+                file_name=fname,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"tpl_{fname}",
+            )
+
     with st.expander("Browser storage", expanded=False):
         st.caption(
             "Non-sensitive preferences (region, strategy, selected components, "
@@ -255,31 +277,38 @@ with st.sidebar:
             st.rerun()
 
 # ---------------- Upload ----------------
-st.subheader("1. Upload workload description")
-uploaded = st.file_uploader(
-    "Any format: Excel/CSV (RVTools, infra list), PDF (design doc, RFP), "
-    "image (PNG/JPG/GIF/WebP — screenshots of spec tables or diagrams work), "
-    "Word (.docx), or plain text/markdown. The classifier decides what to run.",
+st.subheader("1. Upload workload description(s)")
+uploaded_files = st.file_uploader(
+    "Upload ONE or MORE files. Mix and match — inventory + DB list + "
+    "licensing notes, or a single RVTools export. Supported: Excel/CSV "
+    "(RVTools, Azure Migrate, infra list), PDF (design doc, RFP), image "
+    "(screenshots), Word (.docx), plain text/markdown.",
     type=ALL_SUPPORTED_EXTS,
+    accept_multiple_files=True,
     help=(
         "PDFs and images are read natively by Claude (no OCR preprocessing). "
-        "DOCX is text-extracted including tables. Spreadsheets keep the "
-        "fast mapping-based parser for large files."
+        "DOCX includes tables. Uploading multiple files is useful when "
+        "inventory, DB editions, and AHB / licensing details live in "
+        "separate docs — the app merges them into one assessment."
     ),
 )
 
-if uploaded is None:
+if not uploaded_files:
     st.info(
-        "Upload a file to begin. Supports VM inventories (RVTools, infra lists), "
-        "SIEM/SOC design docs, AI use-cases, data-platform specs, or mixed "
-        "architecture documents."
+        "Upload at least one file. Supports VM inventories (RVTools, Azure "
+        "Migrate, infra lists), SIEM/SOC design docs, AI use-cases, data-"
+        "platform specs, or mixed architecture documents. Multi-file upload "
+        "is supported — drop in additional docs to fill gaps."
     )
     st.stop()
 
-upload_bytes = uploaded.read()
-upload_name = uploaded.name
+# Read + cache each file's bytes once
+uploads: list = []
+for f in uploaded_files:
+    fb = f.read()
+    uploads.append({"name": f.name, "bytes": fb})
 
-# ---------------- Stage A: classify ----------------
+# ---------------- Stage A: classify each file ----------------
 st.subheader("2. Workload classification")
 if not anthropic_key:
     st.error(
@@ -288,25 +317,75 @@ if not anthropic_key:
     )
     st.stop()
 
-cache_key = f"profile::{hash(upload_bytes)}::{upload_name}"
-if cache_key in st.session_state:
-    profile = st.session_state[cache_key]
+# Classify each uploaded file; cache in session_state by (file-hash, name).
+profiles_per_file: list = []
+for u in uploads:
+    key = f"profile::{hash(u['bytes'])}::{u['name']}"
+    if key in st.session_state:
+        prof = st.session_state[key]
+    else:
+        with st.spinner(f"Classifying `{u['name']}` (Haiku)…"):
+            try:
+                prof = classify(u["bytes"], u["name"], anthropic_key)
+                st.session_state[key] = prof
+            except Exception as e:
+                st.error(
+                    f"Classification failed for `{u['name']}`: "
+                    f"{type(e).__name__}: {e}"
+                )
+                with st.expander(f"Traceback — {u['name']}", expanded=False):
+                    st.code(traceback.format_exc())
+                prof = None
+    profiles_per_file.append({"file": u, "profile": prof})
+
+# Aggregate: pick the highest-confidence non-unknown workload_type as the
+# "primary" profile; union the suggested_components across all files.
+_valid = [p for p in profiles_per_file if p["profile"] and p["profile"].workload_type != "unknown"]
+if _valid:
+    primary = max(_valid, key=lambda p: p["profile"].confidence)
+    profile = primary["profile"]
+    # Union suggested_components from every classified file
+    all_suggested = set()
+    for p in _valid:
+        all_suggested.update(getattr(p["profile"], "suggested_components", []) or [])
+    profile.suggested_components = sorted(all_suggested)
+    # OR together needs_vm_extraction
+    profile.needs_vm_extraction = any(
+        p["profile"].needs_vm_extraction for p in _valid
+    )
 else:
-    with st.spinner("Classifying workload (Haiku)…"):
-        try:
-            profile = classify(upload_bytes, upload_name, anthropic_key)
-            st.session_state[cache_key] = profile
-        except Exception as e:
-            st.error(f"Classification failed: {type(e).__name__}: {e}")
-            with st.expander("Traceback", expanded=False):
-                st.code(traceback.format_exc())
-            st.stop()
+    profile = profiles_per_file[0]["profile"] if profiles_per_file and profiles_per_file[0]["profile"] else None
+
+if profile is None:
+    st.stop()
 
 # The Anthropic API key is consumed inside pillar render_inputs for VM
 # extraction — stash it in session state for them.
 st.session_state["_anthropic_key"] = anthropic_key
 
+# For back-compat with existing pillar render_inputs that take a single
+# (upload_bytes, upload_name). For lift-shift we pass the FIRST uploaded
+# file — the pillar then loops over ALL uploads and concatenates its
+# extracted items via the merge logic in infra_lift_shift.render_inputs.
+# For non-VM pillars auto-simulate also iterates through `uploads` if present.
+upload_bytes = uploads[0]["bytes"]
+upload_name = uploads[0]["name"]
+st.session_state["_all_uploads"] = uploads   # used by lift-shift merge loop
+
 PILLAR_META = all_metadata()
+
+# Per-file status summary
+with st.expander(f"📎 Files processed ({len(uploads)})", expanded=True):
+    for row in profiles_per_file:
+        p = row["profile"]
+        fname = row["file"]["name"]
+        if p is None:
+            st.markdown(f"- ❌ `{fname}` — classification failed")
+        else:
+            mapped = PILLAR_META.get(p.workload_type, {}).get("label", p.workload_type)
+            st.markdown(
+                f"- ✅ `{fname}` — **{mapped}** · confidence {p.confidence:.0%} · {p.summary or '(no summary)'}"
+            )
 
 col_c1, col_c2, col_c3 = st.columns([2, 1, 1])
 _detected_label = (
@@ -314,7 +393,7 @@ _detected_label = (
     if profile.workload_type in PILLAR_META
     else profile.workload_type.replace("_", " ").title()
 )
-col_c1.markdown(f"**Detected pillar:** {_detected_label}")
+col_c1.markdown(f"**Primary detected pillar:** {_detected_label}")
 col_c2.metric("Confidence", f"{profile.confidence:.0%}")
 col_c3.metric("Complexity", profile.complexity)
 if profile.summary:
@@ -595,9 +674,32 @@ if "bom_lines" in st.session_state:
         st.dataframe(df, use_container_width=True, hide_index=True)
 
     st.subheader("6. Download")
+
+    # Collect assessment-wide assumptions: missing-key-info defaults,
+    # missing-DB-info stub, and any file-level merge notes.
+    global_assumptions: list = []
+    missing_inv = st.session_state.get("_missing_inventory_assumptions") or []
+    global_assumptions.extend(missing_inv)
+    if st.session_state.get("_db_info_missing"):
+        global_assumptions.append(
+            "DB info not detected in uploads — assumed no separate DB license "
+            "required beyond what's bundled with the VM OS. Upload a DB "
+            "editions + versions list to tighten."
+        )
+    _upl = st.session_state.get("_all_uploads") or []
+    if len(_upl) > 1:
+        global_assumptions.append(
+            "Multi-file intake: "
+            + " + ".join(f"`{u['name']}`" for u in _upl)
+            + " merged into a single inventory (dedup by VM name)."
+        )
+
     col_d1, col_d2 = st.columns(2)
     with col_d1:
-        excel_bytes = build_excel_bom(lines, mapping_rows, region, currency, app_name=saved_app)
+        excel_bytes = build_excel_bom(
+            lines, mapping_rows, region, currency,
+            app_name=saved_app, global_assumptions=global_assumptions,
+        )
         _fname = (saved_app or "assessment").replace(" ", "-")
         st.download_button(
             "Download Excel (Azure Pricing Calculator template)",

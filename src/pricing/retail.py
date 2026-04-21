@@ -194,6 +194,23 @@ class RetailPricesClient:
         (which is what Microsoft bills under AHB — you supply your own
         Windows Server license with SA). The returned record's meter_name
         is tagged ' (AHB Windows)' so callers can surface it in the BOM.
+
+        Published Azure retail reference numbers (captured 2026-04) for
+        Standard_D4s_v5 Linux in eastus — used as ground truth by
+        scripts/verify_calculations.py:
+
+            pricing_mode | monthly (× 730 h) | per-hour
+            -------------|--------------------|-----------
+            payg         |   ~$140.16 USD     |  $0.192
+            sp_1y        |   ~$118.04 USD     |  $0.1617
+            sp_3y        |   ~$89.79  USD     |  $0.123
+            ri_1y        |   ~$82.12  USD     |  $0.1125 (amortized from 1Y prepaid)
+            ri_3y        |   ~$49.27  USD     |  $0.0675 (amortized from 3Y prepaid)
+
+        The verify harness tolerates ±2% drift (Microsoft publishes quarterly
+        discount adjustments). If all five numbers move >3% the discount
+        math or the term-fallback logic likely regressed — investigate
+        before bumping the tolerance.
         """
         term_cfg = BILLING_TERMS.get(pricing_mode, BILLING_TERMS["payg"])
 

@@ -8,6 +8,13 @@ from .ai_inventory import (
     ExtractedItem,
 )
 from .classifier import classify, AssessmentProfile
+from .validate import (
+    validate_inventory,
+    apply_assumptions_for_missing,
+    ValidationResult,
+    MissingField,
+    REQUIRED_FIELDS,
+)
 
 __all__ = [
     "parse_inventory",
@@ -20,4 +27,9 @@ __all__ = [
     "ExtractedItem",
     "classify",
     "AssessmentProfile",
+    "validate_inventory",
+    "apply_assumptions_for_missing",
+    "ValidationResult",
+    "MissingField",
+    "REQUIRED_FIELDS",
 ]

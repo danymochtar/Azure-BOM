@@ -1,22 +1,33 @@
-"""Infra Modernization pillar.
+"""Infra & App Modernization pillar.
 
 App Service, AKS node pools, Azure Container Registry + stubs for Container
-Apps, API Management, Front Door. Reuses `vm_price` for AKS so the Billing
-Term (PAYG / SP / RI) flows through on node compute.
+Apps, API Management, Front Door, Service Bus, AND developer tooling
+(GitHub Enterprise / Advanced Security / Copilot Business / Copilot
+Enterprise, Visual Studio Pro / Enterprise subscriptions, Azure DevOps
+Basic / Test Plans / Parallel Jobs).
+
+DevTools use static reference pricing (src/pricing/devtools_static.py)
+because the Azure Retail Prices API does not reliably cover user-
+licensing SKUs. Each DevTools line stamps "Static reference pricing
+(2026-04)" into its Assumption column so reviewers can verify.
+
+Reuses `vm_price` for AKS so the Billing Term (PAYG / SP / RI) flows
+through on node compute.
 """
 from __future__ import annotations
 
 from typing import Dict, List, Optional
 
 from ..models import BomLine
+from ..pricing.devtools_static import DEVTOOLS_RATES, REFERENCE_DATE as _STATIC_REF_DATE
 from ..pricing.retail import HOURS_PER_MONTH, RetailPricesClient
 from .azure_security import _pick
 
 
 PILLAR_METADATA = {
     "key": "infra_modernization",
-    "label": "Infra Modernization",
-    "description": "App Service, AKS, ACR, Container Apps, API Management, Front Door.",
+    "label": "Infra & App Modernization",
+    "description": "App Service, AKS, ACR, Container Apps, APIM, Front Door, Service Bus, GitHub + Copilot, Visual Studio, Azure DevOps.",
     "icon": "⚙",
     "needs_vm_extraction": False,
     "default_strategy": None,
@@ -287,6 +298,41 @@ def _apim_line(
     )
 
 
+def _devtools_line(rate_key: str, quantity: int, app_name: str) -> Optional[BomLine]:
+    """Static-reference DevTools line (GitHub, Copilot, VS, Azure DevOps).
+
+    No retail API call — per-seat/per-job licensing isn't in the
+    Consumption feed. The Assumption column cites the reference date so
+    reviewers know to verify against the current MS pricing page.
+    """
+    if quantity <= 0:
+        return None
+    rate = DEVTOOLS_RATES.get(rate_key)
+    if rate is None:
+        return None
+    monthly = rate.per_unit_per_month_usd * quantity
+    return BomLine(
+        category="App Modernization",
+        resource=f"{rate.label} × {quantity} {rate.unit.replace('/month','')}s",
+        sku=rate_key,
+        meter=f"Static reference ({_STATIC_REF_DATE})",
+        region="global",
+        quantity=float(quantity),
+        unit=rate.unit,
+        unit_price=rate.per_unit_per_month_usd,
+        monthly_cost=round(monthly, 2),
+        currency="USD",
+        source="static-reference",
+        service_name=rate.label,
+        custom_name=f"{app_name}-DevTools-{rate_key}" if app_name else f"DevTools-{rate_key}",
+        assumption=(
+            f"Static reference pricing ({_STATIC_REF_DATE}); "
+            f"${rate.per_unit_per_month_usd:.2f} per {rate.unit} × {quantity} "
+            f"= ${monthly:,.2f}/mo. {rate.note}"
+        ),
+    )
+
+
 def _service_bus_line(
     client: RetailPricesClient, region: str, tier_key: str, units: int, app_name: str,
 ) -> Optional[BomLine]:
@@ -504,6 +550,82 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
                 help="Basic/Standard: count of namespaces. Premium: messaging units (1/2/4).",
             )
 
+    # --- Developer tooling (static reference pricing) ---
+    devtools_pref = prefs.get("devtools", {}) or {}
+    with st.expander("GitHub — Enterprise + Advanced Security + Copilot", expanded=False):
+        st.caption(
+            f"Static reference pricing ({_STATIC_REF_DATE}) — not from the "
+            "Retail Prices API. Verify against https://github.com/pricing."
+        )
+        c1, c2 = st.columns(2)
+        gh_ent = c1.number_input(
+            "GitHub Enterprise Cloud — users", min_value=0,
+            value=int(devtools_pref.get("github_enterprise", 0)),
+            step=1, key="gh_ent_users",
+        )
+        gh_ghas = c2.number_input(
+            "GitHub Advanced Security — active committers", min_value=0,
+            value=int(devtools_pref.get("github_advanced_security", 0)),
+            step=1, key="gh_ghas_users",
+        )
+        c3, c4 = st.columns(2)
+        gh_copilot_biz = c3.number_input(
+            "GitHub Copilot Business — users", min_value=0,
+            value=int(devtools_pref.get("github_copilot_business", 0)),
+            step=1, key="gh_copilot_biz",
+        )
+        gh_copilot_ent = c4.number_input(
+            "GitHub Copilot Enterprise — users", min_value=0,
+            value=int(devtools_pref.get("github_copilot_enterprise", 0)),
+            step=1, key="gh_copilot_ent",
+        )
+
+    with st.expander("Visual Studio subscriptions", expanded=False):
+        st.caption(
+            f"Static reference pricing ({_STATIC_REF_DATE}). Monthly cloud-"
+            "subscription rate; annual and standard-perpetual options exist "
+            "at different rates."
+        )
+        c1, c2 = st.columns(2)
+        vs_pro = c1.number_input(
+            "Visual Studio Professional — users", min_value=0,
+            value=int(devtools_pref.get("vs_professional", 0)),
+            step=1, key="vs_pro_users",
+        )
+        vs_ent = c2.number_input(
+            "Visual Studio Enterprise — users", min_value=0,
+            value=int(devtools_pref.get("vs_enterprise", 0)),
+            step=1, key="vs_ent_users",
+        )
+
+    with st.expander("Azure DevOps Services", expanded=False):
+        st.caption(
+            f"Static reference pricing ({_STATIC_REF_DATE}). First 5 users + "
+            "all VS subscribers are free on Basic."
+        )
+        c1, c2 = st.columns(2)
+        azdo_basic = c1.number_input(
+            "Basic — users beyond free 5", min_value=0,
+            value=int(devtools_pref.get("azdo_basic", 0)),
+            step=1, key="azdo_basic_users",
+        )
+        azdo_test = c2.number_input(
+            "Basic + Test Plans — users", min_value=0,
+            value=int(devtools_pref.get("azdo_basic_test", 0)),
+            step=1, key="azdo_test_users",
+        )
+        c3, c4 = st.columns(2)
+        azdo_hosted = c3.number_input(
+            "Hosted parallel jobs", min_value=0,
+            value=int(devtools_pref.get("azdo_hosted_pipeline", 0)),
+            step=1, key="azdo_hosted",
+        )
+        azdo_selfhosted = c4.number_input(
+            "Self-hosted parallel jobs", min_value=0,
+            value=int(devtools_pref.get("azdo_selfhosted_pipeline", 0)),
+            step=1, key="azdo_selfhosted",
+        )
+
     return {
         "app_service": {
             "sku": appsvc_sku, "count": int(appsvc_count),
@@ -522,6 +644,18 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
         "apim": {"tier": apim_tier, "units": int(apim_units)},
         "front_door": {"tier": fd_tier, "routes": int(fd_routes)},
         "service_bus": {"tier": sb_tier, "units": int(sb_units)},
+        "devtools": {
+            "github_enterprise":        int(gh_ent),
+            "github_advanced_security": int(gh_ghas),
+            "github_copilot_business":  int(gh_copilot_biz),
+            "github_copilot_enterprise": int(gh_copilot_ent),
+            "vs_professional":          int(vs_pro),
+            "vs_enterprise":            int(vs_ent),
+            "azdo_basic":               int(azdo_basic),
+            "azdo_basic_test":          int(azdo_test),
+            "azdo_hosted_pipeline":     int(azdo_hosted),
+            "azdo_selfhosted_pipeline": int(azdo_selfhosted),
+        },
     }
 
 
@@ -585,5 +719,19 @@ def build_bom(client, region: str, inputs: dict, app_name: str, pricing_mode: st
         tier_key=sb.get("tier", "none"), units=sb.get("units", 0), app_name=app_name,
     )
     if l: lines.append(l)
+
+    # Static-reference DevTools lines (GitHub / Copilot / VS / Azure DevOps)
+    dt = inputs.get("devtools", {}) or {}
+    for rate_key in (
+        "github_enterprise", "github_advanced_security",
+        "github_copilot_business", "github_copilot_enterprise",
+        "vs_professional", "vs_enterprise",
+        "azdo_basic", "azdo_basic_test",
+        "azdo_hosted_pipeline", "azdo_selfhosted_pipeline",
+    ):
+        qty = int(dt.get(rate_key, 0))
+        if qty > 0:
+            l = _devtools_line(rate_key, qty, app_name)
+            if l: lines.append(l)
 
     return lines, []

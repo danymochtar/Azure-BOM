@@ -33,6 +33,12 @@ class BomLine:
     # Azure Pricing Calculator template fields
     service_name: str = ""   # e.g., "Virtual Machines", "Managed Disks", "Azure Firewall"
     custom_name: str = ""    # per-line tag: app name / workload / hub-role
+    # Audit trail — written to the Cost Assumptions sheet of the exported
+    # Excel. Builders with rich context (AHB %, tiered bandwidth, SQL DB
+    # discount, Fabric rationale, static DevTools rate, multi-file merge
+    # notes) set this directly; the export's derive_assumption() helper
+    # fills a sensible default for any line left blank.
+    assumption: str = ""
 
     def to_row(self) -> dict:
         return asdict(self)

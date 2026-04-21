@@ -85,48 +85,150 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
             secondary_region = sec_pick
 
     # ----- Extraction (cached) -----
+    # Runs the AI extractor across EVERY uploaded file and concatenates the
+    # extracted inventory items (dedup by name). Merges pillar-facing notes
+    # into a single per-file status list shown to the user.
     api_key = st.session_state.get("_anthropic_key", "")
     items: List = []
     mode = "failed"
     spec = None
 
-    ext_key = (
-        f"ext::{hash(upload_bytes)}::{upload_name}::{strategy_key}::"
-        f"{include_ha}::{include_off}"
-    )
-    if ext_key in st.session_state:
-        items, mode, spec = st.session_state[ext_key]
-        st.success(f"Using cached extraction ({len(items)} VM(s), `{mode}` mode).")
-        if mode == "direct" and getattr(spec, "summary", None):
-            st.caption(spec.summary)
+    all_uploads = st.session_state.get("_all_uploads") or [
+        {"name": upload_name, "bytes": upload_bytes}
+    ]
+
+    per_file_status: List[str] = []
+    dedup_names: set = set()
+
+    if not api_key:
+        st.warning("Anthropic API key required for VM extraction. Paste one in the sidebar.")
     else:
-        if not api_key:
-            st.warning("Anthropic API key required for VM extraction. Paste one in the sidebar.")
-        else:
-            with st.spinner("Extracting inventory (Sonnet)…"):
+        for u in all_uploads:
+            ub, un = u["bytes"], u["name"]
+            ext_key = (
+                f"ext::{hash(ub)}::{un}::{strategy_key}::"
+                f"{include_ha}::{include_off}"
+            )
+            if ext_key in st.session_state:
+                f_items, f_mode, f_spec = st.session_state[ext_key]
+                per_file_status.append(
+                    f"✅ `{un}` — cached · {len(f_items)} VM(s) · mode `{f_mode}`"
+                )
+            else:
                 try:
-                    items, mode, spec = ai_parse_inventory(
-                        upload_bytes, upload_name, api_key,
-                        include_powered_off=include_off,
-                        strategy_hint=strategy_guidance(strategy_key, ha_enabled=include_ha),
+                    with st.spinner(f"Extracting inventory from `{un}` (Sonnet)…"):
+                        f_items, f_mode, f_spec = ai_parse_inventory(
+                            ub, un, api_key,
+                            include_powered_off=include_off,
+                            strategy_hint=strategy_guidance(strategy_key, ha_enabled=include_ha),
+                        )
+                    st.session_state[ext_key] = (f_items, f_mode, f_spec)
+                    per_file_status.append(
+                        f"✅ `{un}` — extracted {len(f_items)} VM(s) · mode `{f_mode}`"
                     )
-                    st.session_state[ext_key] = (items, mode, spec)
-                    st.success(f"Extracted {len(items)} VM(s) in `{mode}` mode.")
-                    if mode == "direct" and getattr(spec, "summary", None):
-                        st.caption(spec.summary)
                 except Exception as e:
-                    st.warning(f"AI extraction failed ({type(e).__name__}: {e}).")
-                    with st.expander("Traceback", expanded=False):
-                        st.code(traceback.format_exc())
-                    if kind_from_name(upload_name) == "spreadsheet":
+                    per_file_status.append(
+                        f"⚠️ `{un}` — AI extraction failed ({type(e).__name__}: {e})"
+                    )
+                    f_items, f_mode, f_spec = [], "failed", None
+                    if kind_from_name(un) == "spreadsheet":
                         try:
-                            items, _ = parse_inventory(upload_bytes, upload_name, include_powered_off=include_off)
-                            mode, spec = "heuristic", None
-                            st.info(f"Heuristic parser recovered {len(items)} item(s).")
+                            f_items, _ = parse_inventory(
+                                ub, un, include_powered_off=include_off,
+                            )
+                            f_mode = "heuristic"
+                            per_file_status.append(
+                                f"↪ `{un}` — heuristic parser recovered {len(f_items)} item(s)"
+                            )
                         except Exception as e2:
-                            st.error(f"Heuristic parser also failed: {e2}")
-                    else:
-                        st.error("No heuristic fallback for this file type — only AI extraction supports PDF/image/DOCX/text.")
+                            per_file_status.append(
+                                f"❌ `{un}` — heuristic parser failed ({e2})"
+                            )
+
+            # Dedup: concatenate items by name, skipping repeats so two uploads
+            # of the same inventory don't double-count.
+            for it in f_items:
+                nm = (it.name or "").strip().lower()
+                if nm and nm in dedup_names:
+                    continue
+                if nm:
+                    dedup_names.add(nm)
+                items.append(it)
+
+            # Remember the FIRST successful mode/spec for the summary caption
+            if mode == "failed" and f_mode != "failed":
+                mode, spec = f_mode, f_spec
+
+        if len(all_uploads) > 1 or any("⚠️" in s or "❌" in s for s in per_file_status):
+            with st.expander(f"Per-file extraction status ({len(all_uploads)} file(s))", expanded=True):
+                for s in per_file_status:
+                    st.markdown(f"- {s}")
+
+        if items:
+            st.success(f"Merged inventory: {len(items)} unique VM(s) across {len(all_uploads)} file(s) · primary mode `{mode}`.")
+            if mode == "direct" and getattr(spec, "summary", None):
+                st.caption(spec.summary)
+
+    # ----- Validate key-info on the merged inventory -----
+    # Surfaces missing vcpu/memory/storage/os per VM and offers two actions:
+    # (1) upload another doc, (2) accept baseline assumptions. Accepted
+    # assumptions are stashed in session_state so the exporter can stamp
+    # them onto the Cost Assumptions sheet.
+    from ..parsers import validate_inventory, apply_assumptions_for_missing
+    val = validate_inventory(items) if items else None
+    st.session_state["_validation_result"] = val
+    missing_assumptions = st.session_state.get("_missing_inventory_assumptions", [])
+
+    if val and not val.ok:
+        with st.container():
+            st.warning(
+                f"**{len(val.missing_by_vm)} VM(s) missing required fields** — "
+                f"the cost engine needs vCPU, memory, storage, and OS per VM. "
+                f"By field: "
+                + ", ".join(f"{k}={v}" for k, v in val.by_field.items() if v > 0)
+                + "."
+            )
+            with st.expander("Which VMs are missing what?", expanded=True):
+                for vm, fields in val.missing_by_vm.items():
+                    st.markdown(f"- `{vm}` → missing `{', '.join(fields)}`")
+            ca1, ca2 = st.columns(2)
+            ca1.info(
+                "Option A — upload another doc containing the missing fields "
+                "(add it to the uploader at the top of the page). The app will "
+                "merge the new data automatically."
+            )
+            if ca2.button(
+                "Option B — continue with documented baseline assumptions",
+                key="ls_accept_baseline",
+                help=(
+                    "Fills missing fields with the Azure lowest-cost defaults "
+                    "(2 vCPU, 4 GB RAM, 64 GB disk, Linux OS) and stamps each "
+                    "substitution in the Cost Assumptions sheet so reviewers "
+                    "know which lines have guessed inputs."
+                ),
+            ):
+                new_assumptions = apply_assumptions_for_missing(items, val)
+                st.session_state["_missing_inventory_assumptions"] = new_assumptions
+                st.rerun()
+    elif missing_assumptions:
+        with st.expander(
+            f"✅ Baseline assumptions applied to {len(missing_assumptions)} VM(s)",
+            expanded=False,
+        ):
+            for a in missing_assumptions:
+                st.caption(f"• {a}")
+
+    if val and not val.has_db_info and items:
+        st.info(
+            "**DB info not detected.** Continuing with the assumption "
+            "**'no separate DB license required beyond what's in the VM OS "
+            "bundle'** — stamped in the Cost Assumptions sheet. Upload a DB "
+            "list (SQL Server / Postgres / MySQL editions + versions) to "
+            "tighten the estimate."
+        )
+        st.session_state["_db_info_missing"] = True
+    else:
+        st.session_state["_db_info_missing"] = False
 
     if items:
         import pandas as pd

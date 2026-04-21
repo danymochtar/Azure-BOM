@@ -82,6 +82,64 @@ def _run_d4s_payg_linux(client, region):
     return _sum_lines(compute)
 
 
+def _run_d4s_linux_by_term(term: str):
+    """Factory returning a scenario runner for D4s v5 Linux at a given
+    billing term — used by the per-term reference scenarios below.
+
+    NOTE: `compute_bom` includes OS disk + data disks; we filter to Compute
+    only so the comparison against Microsoft's advertised per-SKU VM rate
+    is apples-to-apples.
+    """
+    def _runner(client, region):
+        items = [InventoryItem(name="vm", vcpu=4, memory_gb=16, storage_gb=128, os="Linux")]
+        lines, _ = build_compute_bom(items, client, region, pricing_mode=term)
+        compute = [l for l in lines if l.category == "Compute"]
+        return _sum_lines(compute)
+    return _runner
+
+
+def _run_github_enterprise_100(client, region):
+    """GitHub Enterprise Cloud × 100 users via the infra_modernization
+    pillar's static reference builder. Retail API doesn't cover per-seat
+    licensing, so this exercises the devtools_static fallback path."""
+    from src.pillars.infra_modernization import _devtools_line
+    line = _devtools_line("github_enterprise", 100, app_name="")
+    return line.monthly_cost if line else 0.0
+
+
+def _run_github_copilot_business_100(client, region):
+    from src.pillars.infra_modernization import _devtools_line
+    line = _devtools_line("github_copilot_business", 100, app_name="")
+    return line.monthly_cost if line else 0.0
+
+
+def _run_m365_backup_5000gb(client, region):
+    """M365 Backup 5000 GB — retail-or-static builder."""
+    from src.pillars.m365_and_others import _retail_or_static_line
+    line = _retail_or_static_line(
+        client=client, region=region,
+        rate_key="m365_backup", quantity=5000.0,
+        retail_service_name="Microsoft 365 Backup",
+        retail_meter_hint="protected data",
+        category="M365",
+        custom_name="Verify-M365-Backup",
+        app_name="",
+    )
+    return line.monthly_cost if line else 0.0
+
+
+def _run_m365_others_freeform(client, region):
+    """Generic free-form 'other marketplace' row — exports the user-supplied
+    monthly cost verbatim."""
+    from src.pillars.m365_and_others import _freeform_line
+    line = _freeform_line(
+        label="Elastic Cloud Enterprise",
+        monthly_cost=1200.0, notes="regression scenario",
+        app_name="",
+    )
+    return line.monthly_cost if line else 0.0
+
+
 def _run_fabric_f64(client, region):
     line = _fabric_line(client, region, "F64", app_name="")
     return line.monthly_cost if line else 0.0
@@ -181,6 +239,87 @@ SCENARIOS: List[Scenario] = [
         expected_min_usd=5.0, expected_max_usd=50.0,
         tolerance_pct=10.0,
         notes="30 × 1M input tokens × $0.15/M + 30 × 0.2M output × $0.60/M ≈ $8.",
+    ),
+    # ---------------------------------------------------------------------
+    # Per-term D4s v5 Linux reference scenarios (eastus)
+    #
+    # Anchored to Microsoft's published retail prices captured 2026-04 — see
+    # the `vm_price()` docstring for the exact numbers. Tolerances here are
+    # tight (2%) on purpose: these prove the RI/SP amortization and term
+    # fallback logic agree with Microsoft's pricing page, quarter to quarter.
+    # When MS moves rates, tighten/loosen here rather than bumping tolerance
+    # everywhere.
+    # ---------------------------------------------------------------------
+    Scenario(
+        label="D4s v5 Linux PAYG (eastus reference)",
+        runner=_run_d4s_linux_by_term("payg"),
+        expected_monthly_usd=140.16,
+        tolerance_pct=2.0,
+        notes="$0.192/h × 730 = $140.16 (published reference 2026-04).",
+    ),
+    Scenario(
+        label="D4s v5 Linux Savings Plan 1Y (eastus reference)",
+        runner=_run_d4s_linux_by_term("sp_1y"),
+        expected_monthly_usd=118.04,
+        tolerance_pct=2.0,
+        notes="Savings Plan 1Y ~$0.1617/h × 730 (reference 2026-04).",
+    ),
+    Scenario(
+        label="D4s v5 Linux Savings Plan 3Y (eastus reference)",
+        runner=_run_d4s_linux_by_term("sp_3y"),
+        expected_monthly_usd=89.79,
+        tolerance_pct=2.0,
+        notes="Savings Plan 3Y ~$0.123/h × 730 (reference 2026-04).",
+    ),
+    Scenario(
+        label="D4s v5 Linux RI 1Y (eastus reference, amortized)",
+        runner=_run_d4s_linux_by_term("ri_1y"),
+        expected_monthly_usd=82.12,
+        tolerance_pct=2.0,
+        notes="1Y prepaid / (730 × 12) = amortized per-hour $0.1125 (2026-04).",
+    ),
+    Scenario(
+        label="D4s v5 Linux RI 3Y (eastus reference, amortized)",
+        runner=_run_d4s_linux_by_term("ri_3y"),
+        expected_monthly_usd=49.27,
+        tolerance_pct=2.0,
+        notes="3Y prepaid / (730 × 36) = amortized per-hour $0.0675 (2026-04).",
+    ),
+    # ---------------------------------------------------------------------
+    # Static-reference pricing scenarios (DevTools + M365 & Others)
+    #
+    # These bypass the Retail Prices API — the Retail API doesn't carry
+    # per-seat GitHub / VS / Azure DevOps licensing or many M365 Syntex
+    # meters, so the builders fall back to a dated static sheet. These
+    # scenarios guard the fallback math and stamp-dates.
+    # ---------------------------------------------------------------------
+    Scenario(
+        label="GitHub Enterprise × 100 users (static 2026-04 reference)",
+        runner=_run_github_enterprise_100,
+        expected_monthly_usd=2100.0,    # 100 × $21
+        tolerance_pct=0.5,
+        notes="Static reference: 100 × $21/user/month = $2100.",
+    ),
+    Scenario(
+        label="GitHub Copilot Business × 100 users (static reference)",
+        runner=_run_github_copilot_business_100,
+        expected_monthly_usd=1900.0,    # 100 × $19
+        tolerance_pct=0.5,
+        notes="Static reference: 100 × $19/user/month = $1900.",
+    ),
+    Scenario(
+        label="M365 Backup 5000 GB (retail or static fallback)",
+        runner=_run_m365_backup_5000gb,
+        expected_min_usd=500.0, expected_max_usd=1000.0,
+        tolerance_pct=5.0,
+        notes="5000 × $0.15/GB = $750 via static fallback (retail varies).",
+    ),
+    Scenario(
+        label="M365 & Others generic free-form line (echo)",
+        runner=_run_m365_others_freeform,
+        expected_monthly_usd=1200.0,
+        tolerance_pct=0.5,
+        notes="Free-form 'user-provided' line should echo the monthly cost.",
     ),
 ]
 

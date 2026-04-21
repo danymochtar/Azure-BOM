@@ -101,8 +101,25 @@ def pillar_extraction_hint(
 ) -> str:
     """Return the text guidance appended to the Sonnet extractor prompt for
     a specific pillar. Currently only infra_lift_shift uses the Sonnet
-    extractor; other pillars rely on user-provided inputs.
+    extractor; other pillars rely on user-provided inputs, but the hint
+    can still shape auto-simulate output for those pillars.
     """
     if pillar == "infra_lift_shift":
         return strategy_guidance(strategy or "iaas", ha_enabled=ha_enabled)
+
+    if pillar == "data_platform":
+        return (
+            "Recommend Microsoft Fabric as the DEFAULT data-platform "
+            "substrate. Fabric F-SKUs cover Power BI, Data Factory, "
+            "OneLake, Warehouse, Eventhouse in one capacity. Use F-SKU "
+            "sizing by Power BI user count (F2 < 25 users, F4 25-50, "
+            "F8-F16 50-200, F32 200-500, F64 500-2k, F128+ beyond). "
+            "Azure Databricks should ONLY be recommended when the doc "
+            "explicitly calls for (a) existing Databricks estate, (b) "
+            "dedicated Spark / Photon compute, (c) Python/ML libraries "
+            "not compatible with Fabric notebooks. Azure SQL DB / SQL "
+            "MI / PostgreSQL Flexible / MySQL Flexible are recommended "
+            "for OLTP workloads distinct from analytics."
+        )
+
     return ""

@@ -26,6 +26,35 @@ FABRIC_CAPACITIES: List[str] = [
     "F2", "F4", "F8", "F16", "F32", "F64", "F128", "F256", "F512", "F1024", "F2048",
 ]
 
+
+def recommend_fabric_sku(pbi_user_count: int) -> str:
+    """Recommend a Fabric F-SKU based on Power BI user count.
+
+    Rule-of-thumb ladder (Microsoft sizing guide 2026):
+      < 25 users          → F2
+      25-50 users         → F4
+      50-200 users        → F8-F16 (pick F16 at the upper end)
+      200-500 users       → F32
+      500-2,000 users     → F64
+      2,000-10,000 users  → F128
+      > 10,000 users      → F256+
+    """
+    if pbi_user_count < 25:
+        return "F2"
+    if pbi_user_count < 50:
+        return "F4"
+    if pbi_user_count < 100:
+        return "F8"
+    if pbi_user_count < 200:
+        return "F16"
+    if pbi_user_count < 500:
+        return "F32"
+    if pbi_user_count < 2000:
+        return "F64"
+    if pbi_user_count < 10_000:
+        return "F128"
+    return "F256"
+
 AZURE_SQL_DB_TIERS: Dict[str, str] = {
     "gp":   "General Purpose (serverless / provisioned vCore)",
     "bc":   "Business Critical (zone-redundant, Always On replicas)",
@@ -809,11 +838,31 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
     adx_pref = prefs.get("adx", {}) or {}
     cosmos_sl_pref = prefs.get("cosmos_serverless", {}) or {}
 
+    # --- Fabric-first: Power BI users drives capacity recommendation ---
+    pbi_users = int(prefs.get("pbi_users", 0))
+    pbi_users = st.number_input(
+        "Existing Power BI users (drives Fabric F-SKU recommendation)",
+        min_value=0, max_value=1_000_000,
+        value=pbi_users, step=25, key="dp_pbi_users",
+        help=(
+            "Microsoft Fabric is the recommended default for data platform. "
+            "The F-SKU sizes against reporting/interactive user concurrency. "
+            "Enter your existing + planned Power BI users."
+        ),
+    )
+    rec_sku = recommend_fabric_sku(pbi_users) if pbi_users > 0 else None
+    if rec_sku:
+        st.info(
+            f"**Recommended Fabric SKU for {pbi_users:,} PBI users: `{rec_sku}`**. "
+            "Fabric capacity scales non-linearly — over-sizing is common. "
+            "Pick a smaller F-SKU to start if workload is bursty."
+        )
+
     with st.expander("Microsoft Fabric / Cosmos / Synapse", expanded=True):
         c1, c2, c3 = st.columns(3)
         with c1:
             _fabric_opts = ["(none)"] + FABRIC_CAPACITIES
-            _saved_f = prefs.get("fabric_sku") or "(none)"
+            _saved_f = prefs.get("fabric_sku") or rec_sku or "(none)"
             fabric_sku = st.selectbox(
                 "Fabric capacity", _fabric_opts, key="fabric_sku",
                 index=_sel_idx(_fabric_opts, _saved_f),
@@ -1095,6 +1144,8 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
             )
 
     return {
+        "pbi_users": int(pbi_users),
+        "fabric_recommended_sku": rec_sku,
         "fabric_sku": fabric_sku,
         "cosmos_ru_per_second": int(cosmos_ru),
         "synapse_dwu": int(synapse_dwu),
@@ -1139,7 +1190,16 @@ def build_bom(client, region: str, inputs: dict, app_name: str, pricing_mode: st
 
     if inputs.get("fabric_sku"):
         l = _fabric_line(client, region, inputs["fabric_sku"], app_name)
-        if l: lines.append(l)
+        if l:
+            pbi_users = int(inputs.get("pbi_users", 0) or 0)
+            rec_sku = inputs.get("fabric_recommended_sku")
+            if pbi_users > 0 and rec_sku:
+                l.assumption = (
+                    f"Fabric {inputs['fabric_sku']} capacity × 730 h = ${l.monthly_cost:,.2f}/mo. "
+                    f"Sizing hint: {pbi_users:,} Power BI users → recommended `{rec_sku}` "
+                    f"(Microsoft Fabric sizing guide). Selected `{inputs['fabric_sku']}`."
+                )
+            lines.append(l)
 
     if inputs.get("cosmos_ru_per_second", 0) > 0:
         l = _cosmos_line(client, region, inputs["cosmos_ru_per_second"], app_name)

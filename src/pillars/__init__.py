@@ -18,6 +18,7 @@ from . import (
     hybrid_multicloud,
     infra_lift_shift,
     infra_modernization,
+    m365_and_others,
 )
 
 
@@ -29,6 +30,7 @@ PILLAR_ORDER: List[str] = [
     "ai_application",
     "azure_security",
     "hybrid_multicloud",
+    "m365_and_others",
 ]
 
 
@@ -39,6 +41,7 @@ PILLARS: Dict[str, ModuleType] = {
     "ai_application":      ai_application,
     "azure_security":      azure_security,
     "hybrid_multicloud":   hybrid_multicloud,
+    "m365_and_others":     m365_and_others,
 }
 
 
@@ -62,4 +65,5 @@ __all__ = [
     "hybrid_multicloud",
     "infra_lift_shift",
     "infra_modernization",
+    "m365_and_others",
 ]

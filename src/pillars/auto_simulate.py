@@ -49,6 +49,12 @@ PILLAR_SCHEMAS: Dict[str, str] = {
 }""",
     "data_platform": """Schema for data_platform.suggested_inputs:
 {
+  "pbi_users": int,  // existing + planned Power BI users — drives Fabric F-SKU
+                     // recommendation (< 25 = F2, 25-50 = F4, 50-100 = F8,
+                     // 100-200 = F16, 200-500 = F32, 500-2k = F64, 2k-10k = F128,
+                     // > 10k = F256). If doc mentions Power BI viewers, readers,
+                     // or analysts, populate this from the explicit count or an
+                     // inferred tenant-user count.
   "fabric_sku": "F2|F4|F8|F16|F32|F64|F128|F256|F512|F1024|F2048|null",
   "cosmos_ru_per_second": int,
   "synapse_dwu": int,
@@ -84,8 +90,24 @@ PILLAR_SCHEMAS: Dict[str, str] = {
   "container_apps": {"vcpu_seconds": float, "mem_gib_seconds": float, "request_millions": float},
   "apim":           {"tier": "none|consumption|basic_v2|standard_v2|premium", "units": int},
   "front_door":     {"tier": "none|standard|premium", "routes": int},
-  "service_bus":    {"tier": "none|basic|standard|premium", "units": int}
-}""",
+  "service_bus":    {"tier": "none|basic|standard|premium", "units": int},
+  "github_enterprise_users":         int,
+  "github_advanced_security_committers": int,
+  "github_copilot_business_users":   int,
+  "github_copilot_enterprise_users": int,
+  "vs_professional_users":           int,
+  "vs_enterprise_users":             int,
+  "azdo_basic_users":                int,
+  "azdo_basic_test_users":           int,
+  "azdo_hosted_pipeline_jobs":       int,
+  "azdo_selfhosted_pipeline_jobs":   int
+}
+Notes:
+- Developer tooling is priced from a static 2026-04 reference sheet (the
+  Retail Prices API does not cover per-seat licensing). Typical defaults
+  when the doc says "X developers": github_enterprise_users = X,
+  github_copilot_business_users = X, vs_professional_users ≈ X/5,
+  azdo_basic_users = max(X - 5, 0).""",
     "infra_lift_shift": """Schema for infra_lift_shift.suggested_inputs (advisory only — the pillar
 still reads the file with Sonnet for VM extraction):
 {
@@ -116,6 +138,24 @@ Notes:
 - Defender plans cost the SAME per-resource as for Azure VMs — reuse the
   server count for servers_p2 / cspm and enter manual vCore counts for
   sql_on_vms / containers / storage accounts.""",
+    "m365_and_others": """Schema for m365_and_others.suggested_inputs:
+{
+  "m365_backup_gb":              float,  // protected GB / month
+  "m365_archive_gb":              float,  // archived GB / month
+  "sharepoint_premium_tx":        float,  // Syntex transactions / month
+  "copilot_studio_pack_25k":     int,    // prepaid packs (25K messages each)
+  "copilot_studio_payg_messages": int,    // pay-as-you-go messages / month
+  "others": [
+     {"label": str, "monthly_cost_usd": float, "notes": str}
+     // Free-form Azure-marketplace / Azure-billed SaaS lines.
+     // Examples: {"label": "Elastic Cloud Enterprise", "monthly_cost_usd": 1200,
+     //            "notes": "observability tier"}
+  ]
+}
+Notes:
+- All rates except `others[]` come from a static 2026-04 reference sheet;
+  the Cost Assumptions sheet stamps the reference date on every line.
+- `others[]` is echoed back verbatim with the user-supplied monthly cost.""",
 }
 
 
