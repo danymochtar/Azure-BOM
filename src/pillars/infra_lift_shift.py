@@ -437,7 +437,21 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
             st.markdown("**Quantities**")
             c1, c2 = st.columns(2)
             with c1:
-                backup_pct = st.slider("Azure Backup — % of total disk", 0, 200, backup_pct, 5)
+                # Backup % is the storage multiplier driving the Recovery
+                # Vault GB line. Only relevant when Recovery Vault is on
+                # — otherwise hide it (matches the pattern used by every
+                # other quantity input).
+                if "recovery_vault" in _lz_set:
+                    backup_pct = st.slider(
+                        "Azure Backup — % of total disk",
+                        0, 200, backup_pct, 5,
+                        help=(
+                            "Recovery Vault stores N% of total VM disk "
+                            "as backup. Default 40% covers ~1 month of "
+                            "incremental backups for typical change "
+                            "rates (5-10% daily delta × 30 days)."
+                        ),
+                    )
                 if "log_analytics" in _lz_set:
                     la_mb_per_vm_per_day = st.number_input(
                         "Log Analytics — MB/day per VM",
@@ -454,12 +468,33 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
                         ),
                     )
                 if "app_gateway_waf" in _lz_set or "app_gateway_waf_cu" in _lz_set:
+                    # CU recommendation per Microsoft Learn sizing guide:
+                    #   1 CU ≈ 2.22 Mbps throughput
+                    #   1 CU ≈ 2,500 persistent TCP connections
+                    #   1 CU ≈ 50 TLS handshakes per second
+                    # Actual CU billed = max(of the three constraints). The
+                    # default (2 CU avg) covers light production:
+                    # ~4.4 Mbps avg / ~5K open connections / ~100 TLS/sec.
+                    _cm = str(prefs.get("__compute_mode__", "normal"))
+                    _cu_default = {"saving": 2, "normal": 2, "high_perf": 8}.get(_cm, 2)
                     waf_capacity_units = st.number_input(
                         "App Gateway WAF v2 — Capacity Units (avg)",
-                        min_value=0, max_value=125, value=int(prefs.get("waf_capacity_units", 2)), step=1,
+                        min_value=0, max_value=125,
+                        value=int(prefs.get("waf_capacity_units", _cu_default)),
+                        step=1,
                         help=(
-                            "Azure Pricing Calculator bills WAF v2 on base instance "
-                            "hours PLUS Capacity Units. Typical: 2-4 CU."
+                            "**How CU is sized** (Microsoft Learn):\n"
+                            "  • 1 CU ≈ 2.22 Mbps throughput\n"
+                            "  • 1 CU ≈ 2,500 persistent connections\n"
+                            "  • 1 CU ≈ 50 TLS handshakes/sec\n"
+                            "Billed CU = max(of those three constraints).\n\n"
+                            "**Common picks:**\n"
+                            "  • 2 CU — light prod (~100 RPS, ~5K connections)\n"
+                            "  • 4-8 CU — medium prod (500-2K RPS)\n"
+                            "  • 10-30 CU — heavy prod (2-10K RPS)\n"
+                            "  • 30-125 CU — enterprise (>10K RPS)\n\n"
+                            f"Compute mode `{_cm}` suggests **{_cu_default} CU** "
+                            "as the baseline."
                         ),
                     )
                 if "firewall_data" in _lz_set or "firewall" in _lz_set or "firewall_premium" in _lz_set:
