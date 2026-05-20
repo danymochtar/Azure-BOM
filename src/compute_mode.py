@@ -128,19 +128,155 @@ _REDIS_BY_MODE = {
 }
 
 
-def apply_data_platform_baselines(mode: str, prefs: Dict[str, Any]) -> Dict[str, Any]:
-    mode = _resolve_mode(mode)
+# Data platform pattern detection — MS Learn positioning is explicit:
+# **analytical workloads** (Fabric / Synapse / Power BI / Lakehouse / ETL
+# pipelines / data warehouse) and **transactional databases** (Azure
+# SQL DB / Postgres / MySQL / Cosmos) are different products and should
+# NOT auto-seed each other. A spec that says "Fabric Lakehouse + Power
+# BI dashboards" should not produce a BOM line for MySQL Flexible.
+#
+# Ref:
+#   https://learn.microsoft.com/en-us/fabric/fundamentals/microsoft-fabric-overview
+#   https://learn.microsoft.com/en-us/azure/architecture/data-guide/big-data/
+#   https://learn.microsoft.com/en-us/azure/architecture/data-guide/relational-data/online-transaction-processing
+_ANALYTICS_KEYWORDS: tuple = (
+    "fabric", "lakehouse", "power bi", "pbi", "synapse", "databricks",
+    "etl ", "elt ", " etl", " elt", "data warehouse", "data mart",
+    "medallion", "dataflow", "data factory", "adf",
+    "delta lake", "parquet", "spark ", "notebook",
+    "olap", "analytics", "analytical", "bi solution", "dashboard",
+    "dwu", "capacity unit", "f-sku", "fabric sku", "ssas",
+    "lookups", "aggregat",
+)
+_OLTP_KEYWORDS: tuple = (
+    "oltp", "transactional", "online transaction", "crud ",
+    "application database", "app db", "record management",
+    "real-time write", "high-throughput write", "key-value",
+    "session store", "shopping cart", "user account",
+)
+_SQL_MIGRATION_KEYWORDS: tuple = (
+    "sql server", "ssis", "ssrs", "ssas", "stored procedure",
+    "stored proc", "t-sql", "tsql", "sql migration", "azure sql",
+)
+_CACHE_KEYWORDS: tuple = (
+    "redis", " cache ", "session store", "rate limit", "pub/sub",
+    "pubsub",
+)
+_COSMOS_KEYWORDS: tuple = (
+    "cosmos", "document db", "documentdb", "global distribution",
+    "multi-master", "multi-region write",
+)
 
-    if _is_empty(prefs.get("azure_sql_db")):
+
+# ADLS Gen2 baseline per mode — analytics workloads always need lake
+# storage. Sized conservatively; user tunes upward.
+_ADLS_BY_MODE = {
+    "saving":    {"tier": "hot",  "redundancy": "LRS", "storage_gb": 100},
+    "normal":    {"tier": "hot",  "redundancy": "LRS", "storage_gb": 1_000},
+    "high_perf": {"tier": "hot",  "redundancy": "GRS", "storage_gb": 10_000},
+}
+
+# Default Fabric F-SKU when no PBI user count is known.
+_FABRIC_BY_MODE = {
+    "saving":    "F2",   # ~$262/mo entry — fine for ≤25 users
+    "normal":    "F8",   # ~$1,050/mo — 50-100 users (Microsoft's "small org" default)
+    "high_perf": "F32",  # ~$4,200/mo — 200-500 users + advanced features
+}
+
+# Power BI user count baseline used to drive Fabric F-SKU when nothing
+# else is in the doc.
+_PBI_USERS_BY_MODE = {"saving": 10, "normal": 50, "high_perf": 250}
+
+
+def _detect_data_workload(*hints: Any) -> Dict[str, bool]:
+    """Classify the data-platform workload pattern from text hints.
+    Returns a dict of booleans — multiple can be True simultaneously
+    (a doc may want both analytics AND a transactional database)."""
+    blob = " ".join(_flatten_text(h) for h in hints).lower()
+    return {
+        "analytics":     any(tok in blob for tok in _ANALYTICS_KEYWORDS),
+        "oltp":          any(tok in blob for tok in _OLTP_KEYWORDS),
+        "sql_migration": any(tok in blob for tok in _SQL_MIGRATION_KEYWORDS),
+        "cache":         any(tok in blob for tok in _CACHE_KEYWORDS),
+        "cosmos":        any(tok in blob for tok in _COSMOS_KEYWORDS),
+        "pg":            "postgres" in blob or "postgresql" in blob,
+        "mysql":         "mysql" in blob,
+    }
+
+
+def apply_data_platform_baselines(
+    mode: str, prefs: Dict[str, Any], *hints: Any,
+) -> Dict[str, Any]:
+    """Seed data-platform baselines per the DETECTED workload pattern.
+
+    No more shotgun-seeding of every database type — that produced
+    nonsensical BOMs like "Fabric spec → MySQL Flexible line item".
+    Instead we read the upload's signals + filename + summary and
+    route to the right MS service:
+
+      - **Analytics signal** (Fabric / Power BI / Lakehouse / ETL /
+        Synapse / Databricks) → Fabric F-SKU + ADLS Gen2 lakehouse.
+        Skip OLTP databases entirely unless those are ALSO mentioned.
+
+      - **SQL migration signal** (SSIS / T-SQL / stored procedure / SQL
+        Server) → Azure SQL DB at the mode's tier. SQL MI option
+        deferred (user can pick via widget).
+
+      - **OLTP signal** (transactional / CRUD / application database)
+        WITHOUT a more specific DB engine mention → Postgres Flexible
+        (open-source, cheaper than Azure SQL DB at small scale).
+
+      - **PostgreSQL / MySQL mention** → Flexible Server in that engine.
+        Both mentioned → both seeded.
+
+      - **Cosmos signal** → Cosmos Serverless (saving) / autoscale
+        (normal/HP). Driver-side selection.
+
+      - **Cache signal** → Redis at the mode's tier.
+
+      - **No signal at all** (data_platform pillar enabled with sparse
+        upload) → conservative analytics baseline (Fabric F2 + 100 GB
+        ADLS) since that's the most common 2026 data-platform pattern.
+        User can fine-tune via widgets.
+    """
+    mode = _resolve_mode(mode)
+    pat = _detect_data_workload(*hints)
+
+    seeded_analytics = False
+    if pat["analytics"] or not (pat["oltp"] or pat["sql_migration"] or pat["pg"] or pat["mysql"] or pat["cosmos"] or pat["cache"]):
+        # Analytics path (or fall-through default when no signal)
+        if _is_empty(prefs.get("fabric_sku")):
+            prefs["fabric_sku"] = _FABRIC_BY_MODE[mode]
+        if _is_empty(prefs.get("pbi_users")):
+            prefs["pbi_users"] = _PBI_USERS_BY_MODE[mode]
+        if _is_empty(prefs.get("adls_gen2")):
+            prefs["adls_gen2"] = dict(_ADLS_BY_MODE[mode])
+        seeded_analytics = True
+
+    if pat["sql_migration"] and _is_empty(prefs.get("azure_sql_db")):
         prefs["azure_sql_db"] = dict(_AZ_SQL_BY_MODE[mode])
 
-    if _is_empty(prefs.get("postgres_flexible")):
+    if pat["oltp"] and not pat["sql_migration"] and not pat["pg"] and not pat["mysql"]:
+        # Generic OLTP, no engine hint → default to Postgres Flexible
+        # (open-source, cheaper at small scale than Azure SQL DB).
+        if _is_empty(prefs.get("postgres_flexible")):
+            prefs["postgres_flexible"] = dict(_PG_MY_BY_MODE[mode])
+
+    if pat["pg"] and _is_empty(prefs.get("postgres_flexible")):
         prefs["postgres_flexible"] = dict(_PG_MY_BY_MODE[mode])
 
-    if _is_empty(prefs.get("mysql_flexible")):
+    if pat["mysql"] and _is_empty(prefs.get("mysql_flexible")):
         prefs["mysql_flexible"] = dict(_PG_MY_BY_MODE[mode])
 
-    if _is_empty(prefs.get("redis_cache")):
+    if pat["cosmos"] and _is_empty(prefs.get("cosmos_serverless")) and _is_empty(prefs.get("cosmos_ru_per_second")):
+        # Mode → Cosmos posture: Saving = serverless (pay-per-RU),
+        # Normal/HP = provisioned autoscale with sensible baseline.
+        if mode == "saving":
+            prefs["cosmos_serverless"] = {"request_units_month": 10_000_000, "storage_gb": 10.0}
+        else:
+            prefs["cosmos_ru_per_second"] = 4000 if mode == "normal" else 20000
+
+    if pat["cache"] and _is_empty(prefs.get("redis_cache")):
         prefs["redis_cache"] = dict(_REDIS_BY_MODE[mode])
 
     return prefs
@@ -245,25 +381,27 @@ def apply_baselines(
     pillar: str,
     mode: str,
     prefs: Dict[str, Any],
-    *gpu_hints: Any,
+    *hints: Any,
 ) -> Dict[str, Any]:
     """Dispatch to the right pillar helper. Pillars not in the table are
     untouched — they either already produce non-empty BOMs (lift-shift),
     or the per-pillar widgets handle their own defaults (security,
     hybrid_multicloud, m365_and_others).
 
-    `gpu_hints`: classifier signals / suggested_components / filename /
-    summary — passed through to `detect_gpu_workload()` so the
-    `ai_application` baseline can auto-seed a GPU VM when the upload
-    mentions training / fine-tuning / specific GPU SKUs.
+    `hints`: classifier signals / suggested_components / filename /
+    summary — text-shaped surfaces that downstream helpers grep for
+    workload-pattern markers. Currently feeds:
+      - `detect_gpu_workload()` in the AI pillar (Llama, A100, training)
+      - `_detect_data_workload()` in the data pillar (Fabric, Power BI,
+        Lakehouse, ETL, OLTP, SQL Server, Cosmos, Redis)
     """
     mode = _resolve_mode(mode)
     if pillar == "ai_application":
         return apply_ai_application_baselines(
-            mode, prefs, wants_gpu=detect_gpu_workload(*gpu_hints),
+            mode, prefs, wants_gpu=detect_gpu_workload(*hints),
         )
     if pillar == "infra_modernization":
         return apply_infra_modernization_baselines(mode, prefs)
     if pillar == "data_platform":
-        return apply_data_platform_baselines(mode, prefs)
+        return apply_data_platform_baselines(mode, prefs, *hints)
     return prefs
