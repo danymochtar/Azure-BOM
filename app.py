@@ -346,11 +346,28 @@ with tab_paste:
         placeholder="e.g. customer-email.txt, meeting-2025-11-12.md",
         key="pasted_text_label",
     )
-    st.caption(
-        "💡 To include a screenshot, use the **📁 Upload files** tab — drag "
-        "the screenshot from the OS screenshot tool directly into the file "
-        "uploader (works in Chrome / Edge / Safari)."
-    )
+
+    # Clipboard image paste — third-party component talks to the browser's
+    # navigator.clipboard.read() API. User clicks the button, grants
+    # permission once per origin, and the image lands here as a PIL Image.
+    st.markdown("**Or paste a screenshot from the clipboard**")
+    pasted_image = None
+    try:
+        from streamlit_paste_button import paste_image_button
+        _paste_result = paste_image_button(
+            label="📋 Paste image from clipboard",
+            key="paste_img_btn",
+            errors="ignore",
+        )
+        if _paste_result and _paste_result.image_data is not None:
+            pasted_image = _paste_result.image_data
+    except ImportError:
+        st.caption(
+            "⚠ `streamlit-paste-button` not installed — add it to "
+            "`requirements.txt` to enable clipboard image paste. "
+            "Meanwhile, use the **📁 Upload files** tab and drag the "
+            "screenshot from your OS screenshot tool."
+        )
 
 # Merge file + pasted content into one stream. Pasted text becomes a
 # synthetic upload so it flows through classification + extraction the
@@ -367,6 +384,19 @@ if (pasted_text or "").strip():
     if "." not in _name.rsplit("/", 1)[-1]:
         _name += ".txt"
     uploads.append({"name": _name, "bytes": pasted_text.encode("utf-8")})
+
+# Pasted image (clipboard → PIL Image via streamlit-paste-button) → PNG
+# bytes → synthetic upload. The classifier + extractor already handle
+# image content natively (Claude reads images directly).
+if pasted_image is not None:
+    import io as _io
+    import time as _time
+    _buf = _io.BytesIO()
+    pasted_image.save(_buf, format="PNG")
+    uploads.append({
+        "name": f"pasted-screenshot-{int(_time.time())}.png",
+        "bytes": _buf.getvalue(),
+    })
 
 if not uploads:
     st.info(
