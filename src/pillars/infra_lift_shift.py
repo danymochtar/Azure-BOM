@@ -20,7 +20,7 @@ from ..architecture import (
     build_ha_bom,
     strategy_guidance,
 )
-from ..constants import AZURE_REGIONS
+from ..constants import AZURE_REGIONS, paired_region, region_label
 from ..landing_zone import (
     LANDING_ZONE_COMPONENTS,
     LZ_PRESETS,
@@ -109,11 +109,33 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
         include_ha = st.checkbox("High Availability", value=bool(prefs.get("include_ha", False)))
         include_bcdr = st.checkbox("BCDR", value=bool(prefs.get("include_bcdr", False)))
 
-    # Secondary region (only when HA or BCDR)
+    # Secondary region (only when HA or BCDR). Default to the Azure-
+    # recommended paired region for the primary so the user doesn't have
+    # to look up the official DR pair manually. Falls back to "(none)"
+    # if Microsoft hasn't published a pair for the primary region.
     secondary_region: Optional[str] = None
     if include_ha or include_bcdr:
+        suggested = paired_region(region)
         secondary_options = ["(none — single region)"] + [r for r in AZURE_REGIONS if r != region]
-        sec_pick = st.selectbox("Secondary region (DR / failover)", secondary_options, index=0)
+        _default_idx = 0
+        if suggested and suggested in secondary_options:
+            _default_idx = secondary_options.index(suggested)
+            st.caption(
+                f"💡 Azure-recommended DR pair for `{region}` → "
+                f"**{region_label(suggested)}** "
+                f"(auto-selected; you can override below)."
+            )
+        else:
+            st.caption(
+                f"⚠ Microsoft has no published BCDR pair for `{region}`. "
+                "Pick a same-geography region manually for cross-region replication."
+            )
+        sec_pick = st.selectbox(
+            "Secondary region (DR / failover)",
+            secondary_options,
+            index=_default_idx,
+            format_func=lambda r: r if r.startswith("(none") else region_label(r),
+        )
         if not sec_pick.startswith("(none"):
             secondary_region = sec_pick
 

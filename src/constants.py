@@ -1,5 +1,7 @@
 """Shared constants (Azure region list, etc.)."""
 
+from typing import Optional
+
 # Subset of commonly used Azure commercial regions; add more as needed.
 AZURE_REGIONS = [
     # Americas
@@ -123,3 +125,101 @@ def region_label(arm_code: str) -> str:
     ARM code if we don't have a label mapping (e.g. a freshly announced
     region that hasn't been added to REGION_LABELS yet)."""
     return REGION_LABELS.get(arm_code, arm_code)
+
+
+# ---------------------------------------------------------------------------
+# Azure paired regions for BCDR cross-region replication
+# ---------------------------------------------------------------------------
+# Microsoft designates "regional pairs" so that platform updates roll out
+# sequentially (never both at once) and so that services like geo-replicated
+# storage / Recovery Services / Azure SQL geo-replication can use the pair
+# without the customer choosing manually. Source:
+#   https://learn.microsoft.com/en-us/azure/reliability/cross-region-replication-azure
+#   https://learn.microsoft.com/en-us/azure/reliability/regions-paired
+#
+# Newer "Azure Regions Phase 2" regions (Malaysia West, Mexico Central,
+# Indonesia Central, Taiwan North, Italy North, Spain Central, etc.) do
+# NOT have an official fixed pair — Microsoft instead recommends choosing
+# a same-geography region manually. For those we list the most sensible
+# in-geo recommendation (matches Microsoft's published guidance where
+# available) and flag the suggestion as `recommended` (no asymmetric
+# automatic services like geo-redundant storage).
+#
+# Format: `primary → paired_secondary`. Bidirectional pairs appear twice.
+# `None` means no recommended pair (Microsoft hasn't published one).
+AZURE_PAIRED_REGIONS: dict = {
+    # Americas — official pairs
+    "eastus":             "westus",
+    "westus":             "eastus",
+    "eastus2":            "centralus",
+    "centralus":          "eastus2",
+    "southcentralus":     "northcentralus",
+    "northcentralus":     "southcentralus",
+    "westus2":            "westcentralus",
+    "westcentralus":      "westus2",
+    "westus3":            "eastus",          # Phase 2; recommended pair
+    "canadacentral":      "canadaeast",
+    "canadaeast":         "canadacentral",
+    "brazilsouth":        "southcentralus",  # asymmetric (BR→SCUS only)
+    "mexicocentral":      "southcentralus",  # Phase 2; recommended
+    "chilecentral":       "brazilsouth",     # Phase 2; recommended
+
+    # Europe — official pairs
+    "northeurope":        "westeurope",
+    "westeurope":         "northeurope",
+    "uksouth":            "ukwest",
+    "ukwest":             "uksouth",
+    "francecentral":      "francesouth",
+    "francesouth":        "francecentral",
+    "germanywestcentral": "germanynorth",
+    "germanynorth":       "germanywestcentral",
+    "norwayeast":         "norwaywest",
+    "norwaywest":         "norwayeast",
+    "switzerlandnorth":   "switzerlandwest",
+    "switzerlandwest":    "switzerlandnorth",
+    "swedencentral":      "swedensouth",
+    "swedensouth":        "swedencentral",
+    # Phase 2 — no fixed Microsoft pair; in-geo recommendations:
+    "polandcentral":      "swedencentral",
+    "italynorth":         "westeurope",
+    "spaincentral":       "francecentral",
+
+    # Middle East & Africa
+    "uaenorth":           "uaecentral",
+    "uaecentral":         "uaenorth",
+    "qatarcentral":       "uaenorth",        # Phase 2; recommended
+    "israelcentral":      "italynorth",      # Phase 2; recommended in-geo
+    "southafricanorth":   "southafricawest",
+    "southafricawest":    "southafricanorth",
+
+    # Asia-Pacific — official pairs
+    "southeastasia":      "eastasia",
+    "eastasia":           "southeastasia",
+    "japaneast":          "japanwest",
+    "japanwest":          "japaneast",
+    "australiaeast":      "australiasoutheast",
+    "australiasoutheast": "australiaeast",
+    "australiacentral":   "australiacentral2",
+    "australiacentral2":  "australiacentral",
+    "koreacentral":       "koreasouth",
+    "koreasouth":         "koreacentral",
+    "centralindia":       "southindia",
+    "southindia":         "centralindia",
+    "westindia":          "southindia",      # asymmetric (W→S only)
+    "jioindiacentral":    "jioindiawest",
+    "jioindiawest":       "jioindiacentral",
+    # Phase 2 APAC — recommended in-geo pairs:
+    "malaysiawest":       "southeastasia",
+    "indonesiacentral":   "southeastasia",
+    "taiwannorth":        "eastasia",
+    "newzealandnorth":    "australiaeast",
+}
+
+
+def paired_region(arm_code: str) -> Optional[str]:
+    """Return the Azure-recommended DR pair for a region, or None if
+    Microsoft hasn't published a pair AND we don't have a sensible
+    in-geography recommendation either. Used by the lift-shift BCDR
+    flow to auto-default the secondary-region picker so users don't
+    have to look up the official pair manually."""
+    return AZURE_PAIRED_REGIONS.get(arm_code)
