@@ -205,8 +205,14 @@ SIEM_COMMITMENT_TIERS: Dict[str, Dict] = {
 # ---------------------------------------------------------------------------
 PILLAR_METADATA = {
     "key": "azure_security",
-    "label": "Azure Security",
-    "description": "Defender suite, Microsoft Sentinel, governance (WAF / Private Link / Purview / PIM).",
+    "label": "Azure Security (Sentinel + advanced)",
+    "description": (
+        "Standalone advanced security: Microsoft Sentinel ingestion, "
+        "WAF managed rules, Private Link, Purview, PIM. Defender for "
+        "Cloud is included automatically in EVERY assessment as a "
+        "CAF-mandatory baseline — only enable this pillar when you "
+        "need Sentinel or non-Defender advanced capabilities."
+    ),
     "icon": "🛡",
     "needs_vm_extraction": False,
     "default_strategy": None,

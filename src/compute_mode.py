@@ -790,6 +790,72 @@ _SECURITY_WORKLOAD_TRIGGERS: List[Tuple[str, Tuple[str, ...]]] = [
 ]
 
 
+def recommend_defender_baseline(
+    lz_preset: str,
+    *hints: Any,
+    vm_count: int = 0,
+    azure_security_active: bool = False,
+) -> Tuple[List[str], Dict[str, float], str]:
+    """Compute the CAF-mandated Defender for Cloud baseline that should
+    appear in EVERY assessment, independent of which pillars are
+    active. Returns (plan_keys, manual_counts, rationale).
+
+    Defender is mandatory per Microsoft CAF "Secure" methodology, so
+    this helper produces the same set of plans whether the user picked
+    lift-shift only, data_platform only, AI only, or a combination.
+    Workload triggers expand the baseline based on the upload's
+    detected resources (SQL → sql_on_vms, AKS → containers, etc.).
+
+    When `azure_security_active=True` the caller is also rendering the
+    Sentinel/advanced pillar — the baseline still emits the same plans
+    (they're still needed) but the Sentinel/Sentinel line itself is
+    deferred to that pillar so we don't duplicate.
+    """
+    blob = " ".join(_flatten_text(h) for h in hints).lower()
+    preset = lz_preset if lz_preset in _LZ_PRESET_SECURITY_BASELINE else "Foundation"
+    plans = list(_LZ_PRESET_SECURITY_BASELINE[preset])
+    # Drop sentinel from the baseline when the user is running the
+    # Sentinel/advanced pillar separately — that pillar owns it.
+    if azure_security_active and "sentinel" in plans:
+        plans.remove("sentinel")
+
+    triggered: List[str] = []
+    for plan, tokens in _SECURITY_WORKLOAD_TRIGGERS:
+        if plan in plans:
+            continue
+        if any(t in blob for t in tokens):
+            plans.append(plan)
+            triggered.append(plan)
+
+    # Per-plan baseline counts. Pickers in build_defender_bom otherwise
+    # default to 0 → no line emitted. These are deliberately
+    # conservative — user tunes upward in the security pillar widget
+    # if needed.
+    manual = {
+        "storage":     1.0,                            # one storage account by default
+        "keyvault":    1.0,                            # one vault, ~10K tx/mo
+        "rm":          1.0,                            # one subscription
+        "dns":         1.0,                            # one subscription
+        "sql_on_vms":  float(max(1, vm_count // 4)),   # ~25% of VMs run SQL when triggered
+        "appsvc":      4.0,                            # 1 plan × 4 vCore
+        "containers":  4.0,                            # 1 small AKS node pool
+        "cosmos":      4.0,                            # 400 RU/s baseline
+        "oss_db":      2.0,                            # 1 flexible server × 2 vCore
+        "ai":          1.0,                            # 1 OpenAI deployment
+        "apis":        5.0,                            # 5 APIs
+    }
+    # Limit manual counts to plans actually in the baseline
+    manual = {k: v for k, v in manual.items() if k in plans}
+
+    rationale = (
+        f"Defender for Cloud baseline (CAF-mandatory). LZ preset "
+        f"`{preset}` → plans: {plans}."
+        + (f" Workload-triggered: {triggered}." if triggered else "")
+        + (" Sentinel handled by the Azure Security pillar." if azure_security_active else "")
+    )
+    return plans, manual, rationale
+
+
 def apply_azure_security_baselines(
     mode: str, prefs: Dict[str, Any], *hints: Any,
 ) -> Dict[str, Any]:

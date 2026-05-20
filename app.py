@@ -461,6 +461,20 @@ with ac2:
         ),
         disabled=(pricing_mode == "payg"),
     )
+    defender_baseline_enabled = st.checkbox(
+        "🛡 Include Defender for Cloud baseline (CAF-mandatory)",
+        value=bool(_prefs.get("defender_baseline_enabled", True)),
+        help=(
+            "Defender for Cloud is required by Microsoft CAF 'Secure' "
+            "methodology in every landing zone. When ON, the BOM adds "
+            "the right CWP plans automatically based on the LZ preset + "
+            "detected workloads (SQL → Defender SQL, AKS → Defender "
+            "Containers, OpenAI → Defender AI, etc.). Turn OFF only "
+            "if the customer already has Defender covered externally "
+            "(e.g. MSP-managed) and wants those lines excluded from "
+            "this BOM."
+        ),
+    )
 
 st.caption(
     "**Cost-optimisation guide:** \n"
@@ -997,6 +1011,51 @@ if _btn_clicked or _should_auto_generate:
             mapping_rows.extend(pl_mapping)
             pillar_totals[pk] = round(sum(l.monthly_cost for l in pl_lines), 2)
 
+        # ---- Always-on Defender for Cloud baseline (CAF-mandatory) ----
+        # Defender is required by CAF "Secure" methodology regardless of
+        # which pillars are active. Emit the baseline plans here so a
+        # data_platform-only or ai_application-only assessment still
+        # gets posture management + threat protection lines. The
+        # `azure_security` pillar (if active) handles Sentinel + advanced
+        # standalone stuff; the baseline + pillar de-dupe via
+        # `azure_security_active`.
+        if defender_baseline_enabled:
+            from src.compute_mode import recommend_defender_baseline
+            from src.landing_zone.defender import build_defender_bom
+            _preset_for_def = str(st.session_state.get("lz_preset") or "Foundation")
+            _ls_inputs = pillar_inputs.get("infra_lift_shift", {}) or {}
+            _vm_count = int((_ls_inputs.get("__exports__") or {}).get("vm_count", 0) or 0)
+            _hints = []
+            for _pk, _pin in pillar_inputs.items():
+                if isinstance(_pin, dict):
+                    _hints.append(_pk)
+                    _hints.extend(
+                        v for v in _pin.values() if isinstance(v, (str, list, tuple))
+                    )
+            _plans, _manual, _rationale = recommend_defender_baseline(
+                _preset_for_def, *_hints,
+                vm_count=_vm_count,
+                azure_security_active=("azure_security" in active_pillars),
+            )
+            if _plans:
+                _defender_lines = build_defender_bom(
+                    client=client, region=region,
+                    enabled_keys=_plans,
+                    vm_count=_vm_count,
+                    manual_counts=_manual,
+                )
+                # Stamp the rationale into the first Defender line's
+                # assumption so the banner picks it up.
+                if _defender_lines:
+                    _defender_lines[0].assumption = (
+                        (_defender_lines[0].assumption + " | " if _defender_lines[0].assumption else "")
+                        + _rationale
+                    )
+                all_lines.extend(_defender_lines)
+                pillar_totals["__defender_baseline__"] = round(
+                    sum(l.monthly_cost for l in _defender_lines), 2
+                )
+
     if getattr(client, "fallbacks_used", None):
         pairs = ", ".join(f"{p}→{f}" for p, f in sorted(client.fallbacks_used))
         st.info(
@@ -1046,6 +1105,7 @@ if _btn_clicked or _should_auto_generate:
             "use_ahb_windows": use_ahb_windows,
             "use_ahb_sql": use_ahb_sql,
             "non_prod_payg": non_prod_payg,
+            "defender_baseline_enabled": defender_baseline_enabled,
             "active_pillars": active_pillars,
             "strategy_key": ls_in.get("strategy_key", "iaas"),
             "include_lz": ls_in.get("include_lz", True),
