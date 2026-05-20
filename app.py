@@ -20,7 +20,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from src.constants import AZURE_REGIONS, CURRENCIES, DEFAULT_REGION, DEFAULT_CURRENCY
+from src.constants import AZURE_REGIONS, CURRENCIES, DEFAULT_REGION, DEFAULT_CURRENCY, region_label
 from src.output import (
     build_excel_bom,
     build_pricing_calculator_import,
@@ -100,10 +100,13 @@ with st.sidebar:
             help="Tagged into 'Custom name' for every BOM line.",
         )
         _default_region = _prefs.get("region") or DEFAULT_REGION
+        # Geo-grouped labels via format_func so the 49-entry list is scannable.
+        # Source-of-truth value remains the ARM code (e.g. 'malaysiawest').
         region = st.selectbox(
             "Primary region",
             AZURE_REGIONS,
             index=AZURE_REGIONS.index(_default_region) if _default_region in AZURE_REGIONS else AZURE_REGIONS.index(DEFAULT_REGION),
+            format_func=region_label,
         )
         _default_currency = _prefs.get("currency") or DEFAULT_CURRENCY
         currency = st.selectbox(
@@ -246,19 +249,30 @@ with st.sidebar:
             "still works."
         )
         from src.output.templates import TEMPLATE_REGISTRY
-        for label, fname, builder in TEMPLATE_REGISTRY:
+        _tpl_labels = [t[0] for t in TEMPLATE_REGISTRY]
+        _tpl_choice = st.selectbox(
+            "Template", _tpl_labels, key="tpl_choice",
+            label_visibility="collapsed",
+        )
+        _tpl_match = next(
+            ((label, fname, builder) for (label, fname, builder)
+             in TEMPLATE_REGISTRY if label == _tpl_choice),
+            None,
+        )
+        if _tpl_match:
+            _lbl, _fname, _builder = _tpl_match
             try:
-                blob = builder()
+                _blob = _builder()
+                st.download_button(
+                    label=f"⬇ Download `{_fname}`",
+                    data=_blob,
+                    file_name=_fname,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"tpl_dl_{_fname}",
+                    use_container_width=True,
+                )
             except Exception as te:
-                st.warning(f"Could not build {label}: {te}")
-                continue
-            st.download_button(
-                label=f"⬇ {label}",
-                data=blob,
-                file_name=fname,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key=f"tpl_{fname}",
-            )
+                st.warning(f"Could not build {_lbl}: {te}")
 
         st.markdown("**Browser storage**")
         st.caption(
@@ -377,8 +391,10 @@ st.session_state["_all_uploads"] = uploads   # used by lift-shift merge loop
 
 PILLAR_META = all_metadata()
 
-# Per-file status summary
-with st.expander(f"📎 Files processed ({len(uploads)})", expanded=True):
+# Per-file status summary — only worth expanding by default when there's
+# more than one upload (single-file = a one-line summary; collapsing
+# reclaims vertical space for the pillar inputs below).
+with st.expander(f"📎 Files processed ({len(uploads)})", expanded=len(uploads) > 1):
     for row in profiles_per_file:
         p = row["profile"]
         fname = row["file"]["name"]
@@ -390,15 +406,16 @@ with st.expander(f"📎 Files processed ({len(uploads)})", expanded=True):
                 f"- ✅ `{fname}` — **{mapped}** · confidence {p.confidence:.0%} · {p.summary or '(no summary)'}"
             )
 
-col_c1, col_c2, col_c3 = st.columns([2, 1, 1])
 _detected_label = (
     PILLAR_META[profile.workload_type]["label"]
     if profile.workload_type in PILLAR_META
     else profile.workload_type.replace("_", " ").title()
 )
-col_c1.markdown(f"**Primary detected pillar:** {_detected_label}")
-col_c2.metric("Confidence", f"{profile.confidence:.0%}")
-col_c3.metric("Complexity", profile.complexity)
+st.markdown(
+    f"**Primary pillar:** {_detected_label}  "
+    f"· **Confidence** {profile.confidence:.0%}  "
+    f"· **Complexity** {profile.complexity}"
+)
 if profile.summary:
     st.caption(profile.summary)
 if profile.signals:
@@ -407,12 +424,78 @@ if profile.signals:
             st.markdown(f"- {s}")
 
 # Pre-tick rules:
-# - single detected pillar → tick that pillar
-# - mixed → tick all five
-# - unknown / other → tick whatever the user last had (from prefs), else empty
+# - single detected pillar  → tick that pillar
+# - mixed                   → derive ticks from the classifier's
+#                             `suggested_components` (mapped to pillars)
+#                             instead of blindly ticking all 7
+# - unknown / other         → tick whatever the user last had, else empty
+_COMPONENT_TO_PILLAR = {
+    # lift-shift / LZ
+    "vm_sizing": "infra_lift_shift", "managed_disks": "infra_lift_shift",
+    "public_ip": "infra_lift_shift", "firewall": "infra_lift_shift",
+    "bastion": "infra_lift_shift", "vpn_gw": "infra_lift_shift",
+    "expressroute_circuit": "infra_lift_shift",
+    "expressroute_gateway": "infra_lift_shift",
+    "app_gateway_waf": "infra_lift_shift",
+    "bandwidth_egress": "infra_lift_shift",
+    "log_analytics": "infra_lift_shift", "key_vault": "infra_lift_shift",
+    "recovery_vault": "infra_lift_shift",
+    "ha": "infra_lift_shift", "bcdr": "infra_lift_shift",
+    "nat_gateway": "infra_lift_shift",
+    # modernization
+    "app_service": "infra_modernization", "aks": "infra_modernization",
+    "container_apps": "infra_modernization", "api_management": "infra_modernization",
+    "front_door": "infra_modernization", "acr": "infra_modernization",
+    "service_bus": "infra_modernization",
+    "github_enterprise": "infra_modernization",
+    "github_advanced_security": "infra_modernization",
+    "github_copilot_business": "infra_modernization",
+    "github_copilot_enterprise": "infra_modernization",
+    "visual_studio_pro": "infra_modernization",
+    "visual_studio_enterprise": "infra_modernization",
+    "azdo_basic": "infra_modernization", "azdo_basic_test": "infra_modernization",
+    "azdo_hosted_pipeline": "infra_modernization",
+    "azdo_selfhosted_pipeline": "infra_modernization",
+    # data
+    "fabric": "data_platform", "synapse": "data_platform",
+    "cosmos_db": "data_platform", "azure_sql_db": "data_platform",
+    "sql_mi": "data_platform", "adls_gen2": "data_platform",
+    "adf": "data_platform", "event_hubs": "data_platform",
+    "databricks": "data_platform", "power_bi": "data_platform",
+    "postgres_flexible": "data_platform", "mysql_flexible": "data_platform",
+    "redis_cache": "data_platform", "azure_files": "data_platform",
+    # AI
+    "azure_openai": "ai_application", "ai_search": "ai_application",
+    "ml_workspace": "ai_application", "gpu_vm": "ai_application",
+    "cognitive_services": "ai_application", "fine_tuning": "ai_application",
+    # security
+    "defender_cspm": "azure_security", "defender_servers_p2": "azure_security",
+    "sentinel": "azure_security", "waf": "azure_security",
+    "private_link": "azure_security", "purview": "azure_security",
+    "pim": "azure_security",
+    "ddos_ip_protection": "azure_security",
+    "ddos_network_protection": "azure_security",
+    # hybrid
+    "azure_arc": "hybrid_multicloud", "defender_multicloud": "hybrid_multicloud",
+    "arc_sql_payg": "hybrid_multicloud",
+    "arc_winserver_payg": "hybrid_multicloud",
+    "arc_k8s": "hybrid_multicloud", "arc_la_ingestion": "hybrid_multicloud",
+    # M365 & others
+    "m365_backup": "m365_and_others", "m365_archive": "m365_and_others",
+    "sharepoint_premium": "m365_and_others",
+    "copilot_studio_pack_25k": "m365_and_others",
+    "copilot_studio_payg": "m365_and_others",
+    "other_marketplace": "m365_and_others",
+}
+
 _saved_active = _prefs.get("active_pillars") or []
 if profile.workload_type == "mixed":
-    _pre_ticked = list(PILLAR_ORDER)
+    derived = {
+        _COMPONENT_TO_PILLAR[c]
+        for c in (profile.suggested_components or [])
+        if c in _COMPONENT_TO_PILLAR
+    }
+    _pre_ticked = [p for p in PILLAR_ORDER if p in derived] or list(PILLAR_ORDER)
 elif profile.workload_type in PILLAR_META:
     _pre_ticked = [profile.workload_type]
 elif _saved_active:
@@ -438,13 +521,14 @@ auto_sim_default = any(
     not PILLAR_META[pk]["needs_vm_extraction"] for pk in active_pillars
 )
 auto_sim_enabled = st.checkbox(
-    "🔮 Auto-simulate inputs from the document (Sonnet reads the doc, pre-fills "
-    "each pillar's inputs, and lists its assumptions + follow-up questions)",
+    "🔮 Auto-simulate inputs from the document",
     value=auto_sim_default,
     help=(
-        "Uses ~2-5K Sonnet tokens per pillar. Cached per (file, pillar, your "
-        "answers) so toggling widgets won't re-hit the API. Skip for pure VM "
-        "lift-and-shift — that pillar reads the file on its own."
+        "Sonnet reads the doc, pre-fills each pillar's inputs, and lists its "
+        "assumptions + follow-up questions. Uses ~2-5K Sonnet tokens per "
+        "pillar. Cached per (file, pillar, your answers) so toggling widgets "
+        "won't re-hit the API. Skip for pure VM lift-and-shift — that pillar "
+        "reads the file on its own."
     ),
 )
 
@@ -467,8 +551,10 @@ for pk in active_pillars:
     if _total is not None:
         _label = f"{md['icon']} {md['label']} — **${_total:,.2f}/mo**"
     else:
-        _label = f"{md['icon']} {md['label']} — {md['description']}"
+        _label = f"{md['icon']} {md['label']}"
     with st.expander(_label, expanded=(pk == _primary_pk)):
+        # Description as inline caption — keeps the expander header tight.
+        st.caption(md["description"])
         merged_prefs = dict(_prefs)
 
         if auto_sim_enabled and not md["needs_vm_extraction"] and anthropic_key:
@@ -750,7 +836,17 @@ if "bom_lines" in st.session_state:
         st.bar_chart(by_cat, x="category", y="monthly_cost")
 
     with st.expander("All line items", expanded=True):
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        show_ids = st.checkbox(
+            "Show retail meter IDs (product/sku/meter)",
+            value=False, key="show_meter_ids",
+            help="Off by default — these are useful for auditing against the Retail Prices API.",
+        )
+        _hide_cols = (
+            [] if show_ids
+            else ["product_id", "sku_id", "meter_id", "source"]
+        )
+        _display_df = df.drop(columns=[c for c in _hide_cols if c in df.columns])
+        st.dataframe(_display_df, use_container_width=True, hide_index=True)
 
     # Token spend breakdown — per-process Claude API usage + USD cost
     usage_list = usage_tracker.get_usage()
