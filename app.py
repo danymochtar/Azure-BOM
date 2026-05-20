@@ -646,6 +646,30 @@ for pk in active_pillars:
     with st.expander(_label, expanded=(pk == _primary_pk)):
         # Description as inline caption — keeps the expander header tight.
         st.caption(md["description"])
+
+        # Per-pillar compute-mode override. Defaults to "(global)" which
+        # means "use the sidebar's mode". Lets the user run e.g. lift-shift
+        # on `normal` while routing data_platform on `high_perf` or
+        # ai_application on `saving`.
+        _override_key = f"_cm_override::{pk}"
+        _override_opts = ["(use global)"] + list(COMPUTE_MODES.keys())
+        _saved_override = st.session_state.get(_override_key, "(use global)")
+        _ov_idx = _override_opts.index(_saved_override) if _saved_override in _override_opts else 0
+        _override_pick = st.selectbox(
+            f"Compute mode for this pillar (global = {COMPUTE_MODES[compute_mode]['short']})",
+            _override_opts,
+            index=_ov_idx,
+            key=_override_key,
+            format_func=lambda k: k if k == "(use global)" else COMPUTE_MODES[k]["label"],
+            help=(
+                "Override the sidebar's global Saving/Normal/HP setting for "
+                "this pillar only. Useful when one workload needs a different "
+                "tier than the rest — e.g. prod data platform on HP while "
+                "non-prod lift-shift VMs stay on Saving."
+            ),
+        )
+        effective_mode = compute_mode if _override_pick == "(use global)" else _override_pick
+
         merged_prefs = dict(_prefs)
 
         if auto_sim_enabled and not md["needs_vm_extraction"] and anthropic_key:
@@ -655,7 +679,7 @@ for pk in active_pillars:
 
             sim_cache_key = (
                 f"_sim::{hash(upload_bytes)}::{upload_name}::{pk}::"
-                f"{sorted((prior_answers or {}).items())}::{compute_mode}"
+                f"{sorted((prior_answers or {}).items())}::{effective_mode}"
             )
             if sim_cache_key in st.session_state:
                 sim = st.session_state[sim_cache_key]
@@ -678,7 +702,7 @@ for pk in active_pillars:
                             filename=upload_name,
                             api_key=anthropic_key,
                             prior_answers=prior_answers,
-                            compute_mode=compute_mode,
+                            compute_mode=effective_mode,
                         )
                     st.session_state[sim_cache_key] = sim
                     st.session_state["_last_sim_call_ts"] = _time.monotonic()
@@ -742,11 +766,21 @@ for pk in active_pillars:
                                     st.session_state.pop(k, None)
                             st.rerun()
 
-        # Mode-aware baseline defaults — fill empty fields per the user's
-        # global compute mode so the BOM is never empty even when auto-
-        # simulate was off. User picks in render_inputs override these.
+        # Mode-aware baseline defaults — fill empty fields per the
+        # effective compute mode (global OR per-pillar override) so the
+        # BOM is never empty even when auto-simulate was off. User picks
+        # in render_inputs override these. Classifier signals + filename
+        # feed `detect_gpu_workload` so the AI pillar can auto-seed a
+        # GPU VM baseline when the upload mentions training / fine-tuning
+        # / specific GPU SKUs.
         from src.compute_mode import apply_baselines
-        merged_prefs = apply_baselines(pk, compute_mode, merged_prefs)
+        merged_prefs = apply_baselines(
+            pk, effective_mode, merged_prefs,
+            getattr(profile, "signals", []),
+            getattr(profile, "suggested_components", []),
+            upload_name,
+            getattr(profile, "summary", ""),
+        )
 
         pillar_inputs[pk] = get_pillar(pk).render_inputs(
             st, merged_prefs, app_name, region, upload_bytes, upload_name, profile,
@@ -766,10 +800,14 @@ for pk, pin in pillar_inputs.items():
         continue
     pin["__use_ahb__"] = bool(use_ahb_windows)
     pin["__use_ahb_sql__"] = bool(use_ahb_sql)
-    # Global compute-mode (Saving / Normal / High-Performance) is read
-    # by every pillar that picks SKU / tier. Sidebar `Pricing` expander
-    # writes it to session_state on every render.
-    pin["__compute_mode__"] = str(st.session_state.get("compute_mode", DEFAULT_COMPUTE_MODE))
+    # Effective compute mode = per-pillar override if set, else the
+    # sidebar's global mode. Lift-shift VM sizer reads this; other
+    # pillars use it via the apply_baselines helper.
+    _global_cm = str(st.session_state.get("compute_mode", DEFAULT_COMPUTE_MODE))
+    _pillar_override = st.session_state.get(f"_cm_override::{pk}", "(use global)")
+    pin["__compute_mode__"] = (
+        _global_cm if _pillar_override == "(use global)" else _pillar_override
+    )
 
 # ---------------- Stage C: generate BOM (fan-out across active pillars) ----------------
 st.subheader("4. Generate assessment")

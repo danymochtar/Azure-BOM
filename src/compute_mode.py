@@ -163,7 +163,65 @@ _AI_SEARCH_BY_MODE = {
 }
 
 
-def apply_ai_application_baselines(mode: str, prefs: Dict[str, Any]) -> Dict[str, Any]:
+# GPU heuristics — when the upload mentions training / fine-tuning /
+# self-host inference / specific GPU SKUs, the AI pillar should seed a
+# GPU VM baseline (Sonnet's auto-simulate prompt also does this, but the
+# heuristic covers the no-API-key / auto-sim-off path). Keyword list is
+# intentionally tight to avoid false positives — chat-only RAG apps that
+# only mention "AI" or "model" shouldn't get an A100.
+# Kept tight to avoid false positives — generic "training" matches
+# "no training required", so we anchor on more specific markers:
+# explicit GPU SKUs, fine-tuning verbs, self-host phrasing, named
+# open-weight models that require GPU hosting.
+_GPU_KEYWORDS: tuple = (
+    "gpu", "cuda", "nvidia",
+    "a100", "h100", "v100", "mi300",
+    "fine-tun", "finetun", "pretrain",
+    "self-host", "selfhost", "self host",
+    "stable diffusion", "llama 70b", "llama 405b",
+    "mixtral", "qwen 72b",
+    "ndmsv4", "ncadsv4", "ndasrv4", "nd96", "nc24", "nc48",
+    # Explicit phrases — broader contexts like "model training" stay
+    # detected but bare "training" alone (which often appears as
+    # negation: "no training required") doesn't.
+    "model training", "training pipeline", "training job",
+    "inference workload", "inference at scale",
+)
+
+# Mode → recommended GPU VM SKU + count. NDmsv4 (H100) for HP training,
+# NCadsv4 (A100) for HP inference, NCasv3 (T4) for saving / dev. Sonnet
+# auto-simulate may override this with a more specific pick.
+_GPU_VM_BY_MODE = {
+    "saving":    {"sku": "Standard_NC8as_T4_v3",     "count": 1, "hours": 100,  "os_windows": False},
+    "normal":    {"sku": "Standard_NC24ads_A100_v4", "count": 1, "hours": 200,  "os_windows": False},
+    "high_perf": {"sku": "Standard_ND96amsr_A100_v4","count": 1, "hours": 730,  "os_windows": False},
+}
+
+
+def detect_gpu_workload(*hints: Any) -> bool:
+    """True when any of the provided strings / iterables mention a
+    GPU-relevant token. Pass classifier signals, suggested_components,
+    filename, summary — anything text-shaped — and the function flattens
+    + lower-cases them for substring matching."""
+    blob = " ".join(_flatten_text(h) for h in hints).lower()
+    return any(tok in blob for tok in _GPU_KEYWORDS)
+
+
+def _flatten_text(x: Any) -> str:
+    if x is None:
+        return ""
+    if isinstance(x, str):
+        return x
+    if isinstance(x, (list, tuple, set)):
+        return " ".join(_flatten_text(i) for i in x)
+    if isinstance(x, dict):
+        return " ".join(_flatten_text(v) for v in x.values())
+    return str(x)
+
+
+def apply_ai_application_baselines(
+    mode: str, prefs: Dict[str, Any], *, wants_gpu: bool = False,
+) -> Dict[str, Any]:
     mode = _resolve_mode(mode)
 
     # OpenAI: seed GPT-4o-mini for saving, GPT-4o otherwise.
@@ -175,24 +233,37 @@ def apply_ai_application_baselines(mode: str, prefs: Dict[str, Any]) -> Dict[str
     if _is_empty(prefs.get("ai_search")):
         prefs["ai_search"] = dict(_AI_SEARCH_BY_MODE[mode])
 
+    if wants_gpu and _is_empty(prefs.get("gpu_vm")):
+        prefs["gpu_vm"] = dict(_GPU_VM_BY_MODE[mode])
+
     return prefs
 
 
 # --- Dispatcher ----------------------------------------------------------
 
-_PILLAR_BASELINE_HOOKS = {
-    "infra_modernization": apply_infra_modernization_baselines,
-    "data_platform":       apply_data_platform_baselines,
-    "ai_application":      apply_ai_application_baselines,
-}
-
-
-def apply_baselines(pillar: str, mode: str, prefs: Dict[str, Any]) -> Dict[str, Any]:
+def apply_baselines(
+    pillar: str,
+    mode: str,
+    prefs: Dict[str, Any],
+    *gpu_hints: Any,
+) -> Dict[str, Any]:
     """Dispatch to the right pillar helper. Pillars not in the table are
     untouched — they either already produce non-empty BOMs (lift-shift),
     or the per-pillar widgets handle their own defaults (security,
-    hybrid_multicloud, m365_and_others)."""
-    hook = _PILLAR_BASELINE_HOOKS.get(pillar)
-    if hook is None:
-        return prefs
-    return hook(_resolve_mode(mode), prefs)
+    hybrid_multicloud, m365_and_others).
+
+    `gpu_hints`: classifier signals / suggested_components / filename /
+    summary — passed through to `detect_gpu_workload()` so the
+    `ai_application` baseline can auto-seed a GPU VM when the upload
+    mentions training / fine-tuning / specific GPU SKUs.
+    """
+    mode = _resolve_mode(mode)
+    if pillar == "ai_application":
+        return apply_ai_application_baselines(
+            mode, prefs, wants_gpu=detect_gpu_workload(*gpu_hints),
+        )
+    if pillar == "infra_modernization":
+        return apply_infra_modernization_baselines(mode, prefs)
+    if pillar == "data_platform":
+        return apply_data_platform_baselines(mode, prefs)
+    return prefs
