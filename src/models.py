@@ -1,5 +1,21 @@
 from dataclasses import dataclass, field, asdict
-from typing import Optional
+from typing import List, Optional
+
+
+@dataclass
+class DiskItem:
+    """One managed disk attached to a VM. RVTools / Azure Migrate
+    exports usually have per-disk rows (Hard Disk 1 / 2 / 3, OS Disk,
+    Data Disk, etc.). Modelling them individually lets the BOM keep
+    the customer's actual disk topology instead of collapsing to one
+    aggregated disk per VM."""
+    label: str                  # "OS Disk", "Hard Disk 1", "C:", "Data Disk 2"
+    size_gb: float
+    # Optional per-disk tier override. Most callers leave this None and
+    # let the builder route via `recommend_disk_tier(vm)` — but if the
+    # source export tags a disk as e.g. "Premium SSD" explicitly,
+    # honor it.
+    tier: Optional[str] = None
 
 
 @dataclass
@@ -7,11 +23,15 @@ class InventoryItem:
     name: str
     vcpu: int
     memory_gb: float
-    storage_gb: float
+    storage_gb: float           # aggregated total; primary when `disks` empty
     os: str = "Linux"
     environment: str = "prod"
     powerstate: str = "poweredOn"
     notes: str = ""
+    # Per-disk breakdown. Empty list → builder falls back to a single
+    # disk sized off `storage_gb` (legacy behaviour, preserves
+    # backward compat with parsers that didn't populate this field).
+    disks: List[DiskItem] = field(default_factory=list)
 
 
 @dataclass

@@ -173,14 +173,32 @@ def build_compute_bom(
         # (`disk_tier`). When `auto_disk_tier=False` every disk uses
         # the global default — matches the legacy "single tier for
         # everything" behaviour.
-        item_tier = (
+        item_tier_default = (
             recommend_disk_tier(item, default=disk_tier)
             if auto_disk_tier else disk_tier
         )
-        disk = recommend_disk(item.storage_gb, tier=item_tier) if item.storage_gb > 0 else None
-        if disk:
-            disk_groups.setdefault(disk.sku, {"disk": disk, "count": 0})
-            disk_groups[disk.sku]["count"] += 1
+        # If the inventory ships per-disk rows (RVTools vDisk sheet,
+        # Azure Migrate physical disk breakdown), emit one disk per
+        # entry — preserves the customer's actual disk topology (C: vs
+        # D: vs Log Disk). Each disk honors its own `tier` override
+        # when present; otherwise uses the VM's auto-routed tier.
+        if item.disks:
+            for d in item.disks:
+                if d.size_gb <= 0:
+                    continue
+                d_tier = d.tier or item_tier_default
+                disk = recommend_disk(d.size_gb, tier=d_tier)
+                if disk:
+                    disk_groups.setdefault(disk.sku, {"disk": disk, "count": 0})
+                    disk_groups[disk.sku]["count"] += 1
+        else:
+            # Legacy path — aggregated single disk sized off
+            # `storage_gb`. Used when parsers haven't populated the
+            # disks list.
+            disk = recommend_disk(item.storage_gb, tier=item_tier_default) if item.storage_gb > 0 else None
+            if disk:
+                disk_groups.setdefault(disk.sku, {"disk": disk, "count": 0})
+                disk_groups[disk.sku]["count"] += 1
 
         mapping_rows.append({
             "VM": item.name,

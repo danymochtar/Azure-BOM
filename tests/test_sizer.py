@@ -186,3 +186,30 @@ def test_disk_size_ladder_tier_prefix():
     assert p.sku.startswith("P")
     assert e.sku.startswith("E")
     assert s.sku.startswith("S")
+
+
+# ---- Multi-disk per VM ---------------------------------------------
+
+def test_inventory_item_default_disks_empty():
+    """Backward compat: VMs without explicit disks list get empty list,
+    not None — keeps the legacy single-disk path working."""
+    from src.models import InventoryItem
+    v = InventoryItem(name="legacy", vcpu=2, memory_gb=8, storage_gb=100)
+    assert v.disks == []
+
+
+def test_inventory_item_with_disks():
+    from src.models import InventoryItem, DiskItem
+    v = InventoryItem(
+        name="db-prod", vcpu=8, memory_gb=64, storage_gb=2048,
+        disks=[
+            DiskItem(label="OS Disk", size_gb=128),
+            DiskItem(label="Data Disk 1", size_gb=1024, tier="Premium SSD"),
+            DiskItem(label="Log Disk", size_gb=896, tier="Standard SSD"),
+        ],
+    )
+    assert len(v.disks) == 3
+    assert v.disks[1].tier == "Premium SSD"
+    # storage_gb should equal sum of disks (validation is at parser
+    # level, but the model permits the user to provide both)
+    assert v.storage_gb == sum(d.size_gb for d in v.disks)

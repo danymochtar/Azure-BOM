@@ -43,13 +43,34 @@ DIRECT_MODE_ROW_CAP = 200
 # Pydantic schemas
 # ---------------------------------------------------------------------------
 
+class ExtractedDisk(BaseModel):
+    """A managed disk attached to one VM. RVTools' vDisk sheet (and
+    Azure Migrate's physical-disk breakdown) typically lists each
+    disk on its own row — keep them as separate entries so the BOM
+    reflects the customer's actual topology instead of collapsing
+    everything to one aggregated disk per VM."""
+
+    label: str = Field(description="Disk label / mount, e.g. 'OS Disk', 'Hard Disk 1', 'C:', 'Data Disk 2', '/var', '/data'.")
+    size_gb: float = Field(description="Provisioned size in GB. Convert MB/MiB → GB by /1024; TB → GB by ×1024.")
+    tier: str = Field(default="", description="Optional explicit tier when the source export tags it (e.g. 'Premium SSD', 'Standard SSD', 'Standard HDD'). Leave empty to let the BOM router decide.")
+
+
 class ExtractedItem(BaseModel):
     """A VM/server Claude extracted directly from the file."""
 
     name: str = Field(description="Server/VM/host name")
     vcpu: int = Field(description="Virtual CPUs. If only physical CPU specs are given (e.g. '2 x 16 cores'), compute total cores = sockets × cores_per_socket.")
     memory_gb: float = Field(description="RAM in GB. Convert MB/MiB to GB by dividing by 1024.")
-    storage_gb: float = Field(description="Total provisioned storage in GB across all disks. Convert TB to GB (multiply by 1024).")
+    storage_gb: float = Field(description="Total provisioned storage in GB across all disks. Convert TB to GB (multiply by 1024). Should equal sum(disks[*].size_gb) when disks list is populated.")
+    disks: List[ExtractedDisk] = Field(
+        default_factory=list,
+        description=(
+            "Per-disk breakdown when the source has it (RVTools vDisk "
+            "sheet, Azure Migrate disk inventory). Populate one entry "
+            "per physical/logical disk row. Leave EMPTY when the "
+            "source only gives a single aggregated storage figure."
+        ),
+    )
     os: str = Field(default="Linux", description="OS family, e.g. 'Windows Server 2019', 'Red Hat Enterprise Linux 8', 'Ubuntu 22.04'")
     environment: str = Field(default="prod", description="prod | dev | test | qa | staging (best guess)")
     powerstate: str = Field(default="poweredOn", description="poweredOn | poweredOff | unknown")
@@ -124,6 +145,21 @@ Extraction rules:
     For ambiguous cases prefer USABLE over RAW and explain in notes.
   * Convert TB → GB by multiplying by 1024.
   * Always return a single number (sum of all volumes).
+- disks: per-disk breakdown when the source has it (RVTools vDisk sheet,
+  Azure Migrate physical-disk inventory, free-text "C: 100 GB, D: 500 GB").
+  * One entry per physical/logical disk row. `storage_gb` should equal
+    the sum of all entries' size_gb.
+  * `label`: keep the source's label verbatim — "OS Disk", "Hard Disk 1",
+    "C:", "/data", "Database Log Disk". Reviewers use these to spot the
+    customer's disk topology in the BOM.
+  * `size_gb`: provisioned size per disk in GB (convert MB/TB as for
+    storage_gb).
+  * `tier`: only set when the source explicitly tags the disk tier
+    (e.g. "Premium SSD" / "Standard SSD" / "Standard HDD"). Otherwise
+    leave empty — the BOM will auto-route based on the VM's role.
+  * Leave `disks` EMPTY when the source only gives one aggregated
+    storage figure; the BOM falls back to a single disk sized off
+    `storage_gb`.
 - os: OS family/version text as stated in the source.
 - powerstate: "poweredOn", "poweredOff", or "unknown".
 
@@ -264,6 +300,13 @@ def _to_inventory_items(extraction: DirectExtraction, include_powered_off: bool)
         if x.recommended_azure_service and x.recommended_azure_service != "Azure Virtual Machine":
             tag = f"PaaS target: {x.recommended_azure_service}"
             combined_notes = f"{tag}. {combined_notes}".strip()
+        from ..models import DiskItem
+        disks = [
+            DiskItem(label=d.label or f"Disk {i+1}", size_gb=float(d.size_gb),
+                     tier=(d.tier or None))
+            for i, d in enumerate(x.disks or [])
+            if d.size_gb > 0
+        ]
         items.append(
             InventoryItem(
                 name=x.name,
@@ -274,6 +317,7 @@ def _to_inventory_items(extraction: DirectExtraction, include_powered_off: bool)
                 environment=x.environment or "prod",
                 powerstate=x.powerstate or "poweredOn",
                 notes=combined_notes,
+                disks=disks,
             )
         )
     return items
