@@ -223,11 +223,28 @@ Rules:
    - "How many concurrent AKS pods at peak?"
    - "What retention is required for security logs (regulatory floor)?"
    - "Do you need cross-region DR or is single-region acceptable?"
+
+   **For EVERY open_question you raise, also provide a defensible best-guess
+   answer in `prefilled_answers` at the SAME LIST INDEX.** Pick the industry-
+   typical answer and briefly justify it inside the answer string. The user
+   sees both the question and your assumed answer prefilled in a text box —
+   they edit only when they need to override. This guarantees a non-empty
+   first-pass BOM even when the doc is sparse. Examples:
+   - Q: "What's the DAU for this AI app?"
+     A: "Assume 100 DAU (typical internal-staff chatbot pilot scale; ~10
+         queries/user/day = 1K interactions/day). Override if you have a
+         specific user count."
+   - Q: "Is this internal staff or customer-facing?"
+     A: "Assume internal staff (B2B, 0.3 concurrency multiplier). Switch to
+         customer-facing if the app is exposed to end-customers — that drops
+         the concurrency to 0.1 but increases peak burst."
 7. If `prior_answers` are provided in the user message, incorporate them and
    DO NOT re-ask.
 8. Output MUST conform to the `suggested_inputs` schema for the requested
    pillar — use the exact key names. Unknown / not-relevant keys can be
-   omitted entirely."""
+   omitted entirely.
+9. `len(prefilled_answers)` MUST equal `len(open_questions)` — pair them
+   1:1 by list index."""
 
 
 class PillarSimulation(BaseModel):
@@ -243,6 +260,18 @@ class PillarSimulation(BaseModel):
     open_questions: List[str] = Field(
         default_factory=list,
         description="Clarifying questions the user should answer to tighten the estimate.",
+    )
+    prefilled_answers: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Defensible best-guess answers to each question in "
+            "`open_questions`, in the SAME ORDER. These prefill the "
+            "follow-up text inputs so the user can immediately see the "
+            "assumption baked into the first-pass BOM and edit to "
+            "override. Must have len() == len(open_questions). When "
+            "uncertain, pick the industry-typical answer and explain "
+            "the rationale inside the answer string."
+        ),
     )
     confidence: float = Field(ge=0.0, le=1.0, description="0 = wild guess, 1 = fully explicit in doc")
 

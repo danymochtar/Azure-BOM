@@ -743,12 +743,30 @@ for pk in active_pillars:
                             st.markdown(f"- {a}")
 
                 if sim.open_questions:
-                    with st.expander("❓ Follow-up questions (answer to tighten the estimate)", expanded=True):
+                    with st.expander(
+                        "❓ Follow-up questions (prefilled with defensible "
+                        "assumptions — edit to override)",
+                        expanded=True,
+                    ):
+                        st.caption(
+                            "Sonnet's best-guess answers are already baked "
+                            "into the BOM above. Edit any answer below and "
+                            "click **Refine with answers** to regenerate "
+                            "with your overrides."
+                        )
                         new_answers = dict(prior_answers)
+                        # Pair questions with Sonnet's prefilled answers
+                        # 1:1 by list index. Falls back to "" if Sonnet
+                        # returned fewer answers than questions.
+                        prefills = list(sim.prefilled_answers or [])
                         for i, q in enumerate(sim.open_questions):
-                            new_answers[q] = st.text_input(
-                                q, value=prior_answers.get(q, ""),
+                            _default = prior_answers.get(q) or (
+                                prefills[i] if i < len(prefills) else ""
+                            )
+                            new_answers[q] = st.text_area(
+                                q, value=_default,
                                 key=f"sim_q_{pk}_{i}",
+                                height=68,
                             )
                         if st.button("Refine with answers", key=f"refine_{pk}"):
                             st.session_state[answers_key] = new_answers
