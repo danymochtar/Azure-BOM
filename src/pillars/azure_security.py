@@ -170,11 +170,22 @@ PILLAR_METADATA = {
 # ---------------------------------------------------------------------------
 
 def _pick(records: List[PriceRecord], substr: str) -> Optional[PriceRecord]:
+    """Pick the cheapest retail meter that matches `substr` AND is
+    non-zero. Free-tier meters ("Storage Mirroring Free Data Stored",
+    "1 vCore - Free", "Hot LRS Delete Operations") otherwise win the
+    `min()` race and leave the BOM with a $0 line for a paid service
+    — exactly what we don't want. Falls back to the unfiltered set on
+    no substring match, and to the cheapest $0 record only when EVERY
+    candidate is $0 (legitimately free service)."""
     sub = substr.lower()
     matches = [r for r in records if sub in r.meter_name.lower() or sub in r.product_name.lower()]
     if not matches:
         matches = records
-    return min(matches, key=lambda r: r.retail_price) if matches else None
+    if not matches:
+        return None
+    non_zero = [r for r in matches if r.retail_price > 0]
+    pool = non_zero if non_zero else matches
+    return min(pool, key=lambda r: r.retail_price)
 
 
 def _cspm_line(client: RetailPricesClient, region: str, vm_count: int) -> Optional[BomLine]:

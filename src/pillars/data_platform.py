@@ -308,12 +308,28 @@ def _adls_gen2_line(
         f"serviceName eq 'Storage' and armRegionName eq '{region}' and priceType eq 'Consumption'"
     )
     hint_parts = [tier_key.lower(), redundancy.lower().replace("ra-", "")]
-    chosen = None
+    # ADLS Gen2 priced via "Hierarchical Namespace" SKU. The right
+    # billable meter is the per-GB STORAGE / DATA STORED charge —
+    # NOT the per-operation meters (Read/Write/List/Delete Ops) which
+    # are often $0 in the free tier and would silently zero out the
+    # BOM. Require either "data stored" or "storage" in the meter
+    # name, and skip $0 records when paid alternatives exist.
+    candidates = []
     for r in recs:
         meter_l = (r.meter_name + " " + r.product_name).lower()
-        if all(h in meter_l for h in hint_parts) and "hierarchical" in meter_l:
-            if chosen is None or r.retail_price < chosen.retail_price:
-                chosen = r
+        if not all(h in meter_l for h in hint_parts):
+            continue
+        if "hierarchical" not in meter_l:
+            continue
+        if "operation" in meter_l or "transaction" in meter_l:
+            # Skip per-operation meters; we want per-GB storage.
+            continue
+        candidates.append(r)
+    chosen = None
+    if candidates:
+        non_zero = [r for r in candidates if r.retail_price > 0]
+        pool = non_zero if non_zero else candidates
+        chosen = min(pool, key=lambda r: r.retail_price)
     if not chosen:
         # Fallback: any storage GB meter matching the tier
         chosen = _pick(recs, tier_key.lower())
