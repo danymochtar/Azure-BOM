@@ -6,7 +6,7 @@ No authentication required. Results are paginated via NextPageLink. We cache
 results per OData filter to avoid repeated calls within a session.
 
 Regional fallback: if an armRegionName-scoped filter returns zero records
-and that region has a fallback mapping (e.g. malaysiacentral -> southeastasia),
+and that region has a fallback mapping (e.g. malaysiawest -> southeastasia),
 the client transparently re-queries against the fallback region. The set
 `fallbacks_used` records which primary→fallback swaps happened so the UI
 can surface them to the user.

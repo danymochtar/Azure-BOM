@@ -21,6 +21,7 @@ from typing import Callable, List, Optional
 
 from ..models import BomLine
 from ..pricing.retail import RetailPricesClient, PriceRecord, HOURS_PER_MONTH
+from ..pricing.lz_static import LZ_STATIC_RATES, REFERENCE_DATE as _LZ_STATIC_DATE
 
 
 @dataclass
@@ -246,7 +247,7 @@ LANDING_ZONE_COMPONENTS: List[LzComponent] = [
         category="Security",
         resource="Key Vault (Standard, 10k ops)",
         default_enabled=True,
-        quantity=0.01,  # 10k operations in millions (Retail price unit varies)
+        quantity=1.0,  # 1 × 10K ops/month — realistic baseline
         unit="10K ops",
         build_filter=lambda region: (
             f"serviceName eq 'Key Vault' and armRegionName eq '{region}' "
@@ -662,9 +663,49 @@ def build_landing_zone_bom(
         if comp.key not in enabled_keys:
             continue
         qty = float(overrides.get(comp.key, comp.quantity))
+        # Quantity = 0 → user explicitly opted out via a slider (e.g. set
+        # firewall_gb_processed = 0 or private_endpoint_count = 0). Don't
+        # emit a $0 line for it.
+        if qty <= 0:
+            continue
         records = client.query(comp.build_filter(region), max_pages=5)
         chosen = (comp.pick(records) if comp.pick else _cheapest(records))
         if not chosen:
+            # Retail feed (and any regional fallback) returned nothing — fall
+            # back to the dated static reference table so the BOM still shows
+            # a non-zero monthly cost. The Assumption column flags the
+            # substitution so reviewers can verify against the live MS
+            # pricing page.
+            static = LZ_STATIC_RATES.get(comp.key)
+            if static:
+                monthly = static.per_unit_per_month_usd * qty
+                lines.append(
+                    BomLine(
+                        category=comp.category,
+                        resource=f"{comp.resource} (static reference)",
+                        sku=comp.key,
+                        meter=f"Static reference ({_LZ_STATIC_DATE})",
+                        region=region,
+                        quantity=qty,
+                        unit=comp.unit,
+                        unit_price=static.per_unit_per_month_usd,
+                        monthly_cost=round(monthly, 2),
+                        currency="USD",
+                        source="static-reference",
+                        service_name=static.label,
+                        assumption=(
+                            f"Static reference pricing ({_LZ_STATIC_DATE}); "
+                            f"retail meter not available for `{region}`. "
+                            f"${static.per_unit_per_month_usd:.4f} × "
+                            f"{qty:,.2f} {static.unit} = ${monthly:,.2f}/mo. "
+                            f"{static.note}"
+                        ),
+                    )
+                )
+                continue
+            # No static reference either — emit a clearly-labelled zero so
+            # the row at least appears (only resources that have NO public
+            # rate should land here).
             lines.append(
                 BomLine(
                     category=comp.category,

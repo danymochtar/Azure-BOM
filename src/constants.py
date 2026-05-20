@@ -27,7 +27,7 @@ AZURE_REGIONS = [
     "koreacentral", "koreasouth",
     "centralindia", "southindia", "westindia",
     "jioindiacentral", "jioindiawest",
-    "malaysiacentral", "malaysiawest",
+    "malaysiawest",
     "indonesiacentral",
     "newzealandnorth",
     "taiwannorth",
@@ -41,7 +41,6 @@ DEFAULT_CURRENCY = "USD"
 # When a service has no retail price in the primary region, query these
 # fallback regions in order. Used by RetailPricesClient.query().
 REGION_FALLBACKS: dict = {
-    "malaysiacentral": ["southeastasia"],
     "malaysiawest": ["southeastasia"],
     # Other newly-announced regions can map here as they come up.
 }
