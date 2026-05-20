@@ -61,7 +61,7 @@ def recommend_vm(
     item: InventoryItem,
     headroom: float = 1.0,
     prefer_burstable_cpu: int = 2,
-    cost_saving_mode: bool = False,
+    compute_mode: str = "normal",
 ) -> VmSku:
     """Right-size an on-prem VM to the closest Azure SKU.
 
@@ -77,30 +77,55 @@ def recommend_vm(
     `headroom` defaults to 1.0 (1:1 sizing). Callers who deliberately want
     a safety margin may pass 1.1 / 1.2 / etc.
 
-    `cost_saving_mode`: when True AND the item is non-prod (per
-    `is_non_prod()`), Burstable B-series is preferred for any size up
-    to B20ms (20 vCPU / 80 GB) — typical ~30-40% saving on the per-hour
-    rate. Memory-heavy workloads (ratio ≥ 6) still go to E-series since
-    B-series caps at 4 GB/vCPU. Prod VMs stay on D/E.
+    `compute_mode` (one of `saving` / `normal` / `high_perf`) biases family
+    selection per the COMPUTE_MODES table in `constants.py`:
 
-    Without cost_saving_mode, Burstable is only chosen for tiny workloads
-    (≤ prefer_burstable_cpu vCPU and ≤ 32 GB memory) regardless of env.
+      • **saving** + non-prod → Burstable B-series (B1s..B20ms). Memory-
+        heavy non-prod (ratio ≥ 6) still routes to E since B caps at
+        4 GB/vCPU. Prod stays on D/E.
+      • **saving** + prod → D-series (same as normal) — we don't auto-
+        downgrade prod to Burstable because the credit-burst model can
+        throttle sustained-CPU prod workloads.
+      • **normal** → D-series (general); E when ratio ≥ 6; Burstable only
+        for very small (≤ prefer_burstable_cpu vCPU, ≤ 32 GB).
+      • **high_perf** → E-series preferred (memory-optimised, premium
+        IOPS); D fallback. Burstable explicitly de-prioritised regardless
+        of env.
+
+    Non-prod detection (`is_non_prod()`) uses the explicit `environment`
+    tag plus VM-name substring matching against `NON_PROD_TOKENS`.
     """
+    mode = compute_mode if compute_mode in ("saving", "normal", "high_perf") else "normal"
     ratio = _memory_to_cpu_ratio(item)
-    non_prod = cost_saving_mode and is_non_prod(item)
+    non_prod = is_non_prod(item)
 
     def family_score(sku: VmSku) -> int:
         if sku.family == "burstable":
-            if non_prod:
+            if mode == "saving" and non_prod:
                 # Memory-heavy non-prod still routes to E-series since
-                # B-series caps at 4 GB per vCPU. For everything else,
-                # B-series is the preferred family.
+                # B-series caps at 4 GB per vCPU. Otherwise prefer B.
                 return 0 if ratio < 6 else 3
+            if mode == "high_perf":
+                # Never prefer Burstable in high-perf mode — credit
+                # exhaustion would throttle the very workloads HP is for.
+                return 5
+            # normal mode (or saving-prod): Burstable only for tiny
+            # workloads where the credit model isn't a meaningful risk.
             return 0 if item.vcpu <= prefer_burstable_cpu and item.memory_gb <= 32 else 3
+
         if sku.family == "memory":
+            if mode == "high_perf":
+                # E-series is the preferred default in HP mode regardless
+                # of ratio — premium IOPS + more memory bandwidth.
+                return 0
             return 0 if ratio >= 6 else 2
-        # general (D-series): de-prioritise vs Burstable when non_prod + cost_saving
-        return 2 if non_prod else 1
+
+        # general (D-series)
+        if mode == "high_perf":
+            return 1  # OK but not preferred
+        if mode == "saving" and non_prod:
+            return 2  # de-prioritise vs Burstable for non-prod cost saving
+        return 1
 
     # --- 1:1 exact match (only when no deliberate headroom padding) ---
     if abs(headroom - 1.0) < 1e-9:

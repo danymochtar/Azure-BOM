@@ -185,8 +185,9 @@ SYSTEM_PROMPT = """You are an Azure solution architect estimating the cost of a 
 You will be given a use-case / design document and told which Azure pillar to
 simulate inputs for. Your job is to read the document, EXTRACT any explicit
 sizing numbers, and INFER the rest using clearly stated industry-standard
-assumptions. Fill as many fields as you can; leave the rest at their default
-(0 / "none" / empty).
+assumptions. **Always produce a non-empty BOM** — if the doc is sparse, fall
+back to defensible baseline values from MS Learn so the user has something to
+fine-tune from.
 
 Rules:
 1. Pull explicit numbers first (e.g. "we expect 1000 DAU" → use that directly).
@@ -198,14 +199,33 @@ Rules:
    - Embedding: one-time index + ~10% of tokens/day for incremental.
    - SIEM: 1 EPS ≈ 2-3 MB/day → 10K EPS ≈ 25 GB/day.
    - Standard Azure workloads: 720 business hours/month unless stated.
-4. If a critical input is missing AND a default would mislead by >30%, add a
+4. **Compute-mode aware defaults** — the user message includes a
+   `compute_mode` hint (`saving` / `normal` / `high_perf`). Bias your tier
+   picks accordingly:
+   - **saving**: Burstable VMs (B-series), App Service Basic (B1/B2),
+     Azure SQL DB General Purpose Serverless, Cosmos DB Serverless,
+     PostgreSQL/MySQL Burstable, Redis Basic. AKS without uptime SLA.
+   - **normal**: Dsv5 VMs, App Service P0v3/P1v3 (Premium v3), Azure SQL
+     DB General Purpose provisioned 2-4 vCore, Cosmos DB autoscale,
+     Redis Standard. AKS with uptime SLA.
+   - **high_perf**: Esv5 / Fsv2 VMs, App Service P2v3/P3v3 or P1mv3
+     (memory-opt), Azure SQL DB Business Critical 8+ vCore, Cosmos DB
+     multi-region, Redis Premium. AKS with GPU pools + uptime SLA.
+   GPU workloads (training / inference / RAG at scale) always recommend
+   NDmsv4 (H100) for training and NCadsv4 (A100) for inference regardless
+   of mode — note the mode in `assumptions`.
+5. **Never return all-zero / all-`none` inputs.** When the doc gives no
+   hint at all, pick a minimum-viable baseline (e.g. 1 App Service P0v3,
+   100 GB ADLS Hot, 1 vCore SQL GP Serverless) and call out the
+   guesswork in `assumptions`. The user will fine-tune via the widgets.
+6. If a critical input is missing AND a default would mislead by >30%, add a
    clarifying question to `open_questions`. Examples:
    - "How many concurrent AKS pods at peak?"
    - "What retention is required for security logs (regulatory floor)?"
    - "Do you need cross-region DR or is single-region acceptable?"
-5. If `prior_answers` are provided in the user message, incorporate them and
+7. If `prior_answers` are provided in the user message, incorporate them and
    DO NOT re-ask.
-6. Output MUST conform to the `suggested_inputs` schema for the requested
+8. Output MUST conform to the `suggested_inputs` schema for the requested
    pillar — use the exact key names. Unknown / not-relevant keys can be
    omitted entirely."""
 
@@ -233,6 +253,7 @@ def simulate(
     filename: str,
     api_key: str,
     prior_answers: Optional[Dict[str, str]] = None,
+    compute_mode: str = "normal",
 ) -> PillarSimulation:
     """Run Sonnet auto-simulate for a pillar. Callers should cache by
     (file hash, pillar, answers-hash) — this function hits the API every
@@ -283,6 +304,12 @@ def simulate(
         PILLAR_SCHEMAS[pillar],
         "",
     ]
+    # Mode hint biases tier picks (Saving / Normal / High-Performance).
+    instruction_parts.append(
+        f"Compute mode hint: **{compute_mode}** — bias tier picks per "
+        "Rule 4 in the system prompt."
+    )
+    instruction_parts.append("")
     if prior_answers:
         instruction_parts.append("Prior answers from the user (incorporate and do not re-ask):")
         for q, a in prior_answers.items():

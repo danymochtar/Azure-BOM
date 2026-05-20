@@ -40,6 +40,98 @@ CURRENCIES = ["USD", "EUR", "GBP", "AUD", "JPY", "CAD", "BRL", "INR", "SGD"]
 DEFAULT_REGION = "malaysiawest"
 DEFAULT_CURRENCY = "USD"
 
+
+# ---------------------------------------------------------------------------
+# Compute mode — global policy that biases SKU / tier selection across every
+# pillar that picks compute resources (VM sizer, App Service, AKS, Azure SQL
+# DB, Postgres / MySQL Flexible, Cosmos, Redis, etc.).
+# ---------------------------------------------------------------------------
+# Rationale (per Microsoft Learn pricing + best-practice docs):
+#
+# - 💰 **saving** — bias toward Burstable / Basic / Serverless tiers that
+#   trade peak performance for ~30-60% lower steady-state cost.
+#   Suitable for non-prod (UAT, dev, test, staging, SIT, QA, sandbox,
+#   training), low-utilisation prod, and anything that can tolerate
+#   credit-burst throttling (B-series VM CPU credits; SQL serverless
+#   auto-pause; App Service Basic/F1).
+#     • VMs: Burstable B-series (B1s..B20ms) — credits when idle, burst
+#       when busy. Cap 20 vCPU / 80 GB / 4 GB per vCPU.
+#     • App Service: B1 / B2 / B3 (Basic). Free F1 for dev only.
+#     • AKS: D-series workers, no uptime SLA, single-zone.
+#     • Azure SQL DB: General Purpose Serverless (auto-pause on idle).
+#     • Postgres/MySQL Flexible: Burstable tier (B1ms / B2s).
+#     • Cosmos DB: Serverless (pay-per-RU, no capacity reservation).
+#     • Redis: Basic C0..C2 (no replica).
+#
+# - ⚖ **normal** — current default; production-grade general-purpose tiers
+#   without paying for advanced HA / IOPS / memory bandwidth.
+#     • VMs: Dsv5 (general purpose) + Esv5 when memory-heavy (ratio ≥ 6).
+#     • App Service: P0v3 / P1v3 (Premium v3).
+#     • AKS: D-series + uptime SLA.
+#     • Azure SQL DB: General Purpose 2-4 vCore provisioned.
+#     • Postgres/MySQL Flexible: General Purpose D-series.
+#     • Cosmos DB: Provisioned throughput autoscale.
+#     • Redis: Standard C2..C4 (with replica).
+#
+# - 🚀 **high_perf** — performance-first; bias toward Memory-optimised /
+#   Compute-optimised / Premium / Business-Critical tiers. Suitable for
+#   sustained-high-CPU workloads, latency-sensitive databases, OLAP, ML
+#   training/inference at scale.
+#     • VMs: Esv5 (memory) / Fsv2 (compute) — auto-simulate may upgrade
+#       to ND/NC GPU series when doc mentions ML/training/inference.
+#     • App Service: P2v3 / P3v3 / P1mv3+ (Premium memory-optimised).
+#       Isolated v2 / ASEv3 for regulated workloads.
+#     • AKS: D/E + GPU node pools + zone-redundant + uptime SLA.
+#     • Azure SQL DB: Business Critical / Hyperscale 8+ vCore.
+#     • Postgres/MySQL Flexible: Memory Optimised E-series + HA.
+#     • Cosmos DB: Provisioned throughput + multi-region writes.
+#     • Redis: Premium P1+ or Enterprise E10+ (geo-replication).
+#
+# References:
+#   https://learn.microsoft.com/en-us/azure/virtual-machines/sizes
+#   https://learn.microsoft.com/en-us/azure/app-service/overview-hosting-plans
+#   https://learn.microsoft.com/en-us/azure/azure-sql/database/service-tiers-sql-database-vcore
+#   https://learn.microsoft.com/en-us/azure/cosmos-db/throughput-serverless
+#   https://learn.microsoft.com/en-us/azure/postgresql/flexible-server/concepts-compute
+#
+COMPUTE_MODES: dict = {
+    "saving": {
+        "label": "💰 Saving — Burstable / Basic / Serverless (~30-60% off)",
+        "short": "saving",
+        "vm_family_pref": ("burstable", "general", "memory"),
+        "app_service_tier_pref": ("B1", "B2", "B3"),
+        "sql_db_tier_pref": "gp_serverless",
+        "pg_mysql_tier_pref": "burstable",
+        "cosmos_tier_pref": "serverless",
+        "redis_tier_pref": "basic",
+        "aks_uptime_sla": False,
+    },
+    "normal": {
+        "label": "⚖ Normal — Production-grade general purpose (default)",
+        "short": "normal",
+        "vm_family_pref": ("general", "memory", "burstable"),
+        "app_service_tier_pref": ("P0v3", "P1v3"),
+        "sql_db_tier_pref": "gp_provisioned",
+        "pg_mysql_tier_pref": "general_purpose",
+        "cosmos_tier_pref": "provisioned_autoscale",
+        "redis_tier_pref": "standard",
+        "aks_uptime_sla": True,
+    },
+    "high_perf": {
+        "label": "🚀 High Performance — Premium / Memory-Optimised / GPU-ready",
+        "short": "high_perf",
+        "vm_family_pref": ("memory", "compute_optimized", "general"),
+        "app_service_tier_pref": ("P2v3", "P3v3", "P1mv3"),
+        "sql_db_tier_pref": "business_critical",
+        "pg_mysql_tier_pref": "memory_optimized",
+        "cosmos_tier_pref": "provisioned_multiregion",
+        "redis_tier_pref": "premium",
+        "aks_uptime_sla": True,
+    },
+}
+DEFAULT_COMPUTE_MODE = "normal"
+
+
 # When a service has no retail price in the primary region, query these
 # fallback regions in order. Used by RetailPricesClient.query().
 REGION_FALLBACKS: dict = {

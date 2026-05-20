@@ -42,15 +42,14 @@ def build_compute_bom(
     app_name: str = "",
     pricing_mode: str = "payg",
     use_ahb: bool = False,
-    cost_saving_mode: bool = False,
+    compute_mode: str = "normal",
 ) -> Tuple[List[BomLine], List[dict]]:
     """Return (bom lines, mapping_rows) where mapping_rows is a per-VM record
     showing source specs -> target Azure SKUs for UI display.
 
-    When `cost_saving_mode` is True, non-prod VMs (UAT / dev / test /
-    staging / SIT / QA / preprod — detected from `environment` field or
-    name substring) are routed to Burstable B-series for ~30-40% savings.
-    Prod VMs and memory-heavy workloads remain on D/E-series.
+    `compute_mode` (one of `saving` / `normal` / `high_perf`) flows
+    through to the sizer's family preferences — see `mapper.sizer.recommend_vm`
+    docstring + `constants.COMPUTE_MODES` for the full mapping.
     """
     lines: List[BomLine] = []
     mapping_rows: List[dict] = []
@@ -60,7 +59,7 @@ def build_compute_bom(
     disk_groups: Dict[str, Dict] = {}
 
     for item in items:
-        sku = recommend_vm(item, headroom=headroom, cost_saving_mode=cost_saving_mode)
+        sku = recommend_vm(item, headroom=headroom, compute_mode=compute_mode)
         win = os_is_windows(item.os) if os_override == "as-detected" else (os_override == "Windows")
         key = (sku.arm_name, win)
         vm_groups.setdefault(key, {"sku": sku, "count": 0, "names": []})

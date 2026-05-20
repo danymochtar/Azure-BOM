@@ -20,7 +20,10 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from src.constants import AZURE_REGIONS, CURRENCIES, DEFAULT_REGION, DEFAULT_CURRENCY, region_label
+from src.constants import (
+    AZURE_REGIONS, CURRENCIES, DEFAULT_REGION, DEFAULT_CURRENCY,
+    COMPUTE_MODES, DEFAULT_COMPUTE_MODE, region_label,
+)
 from src.output import (
     build_excel_bom,
     build_pricing_calculator_import,
@@ -140,6 +143,31 @@ with st.sidebar:
             "• Uncertain → SP 1Y / RI 1Y (30-40% off)  \n"
             "• Spiky / experimental → PAYG"
         )
+
+        # Compute-mode selector — biases SKU/tier selection across every
+        # pillar (VM sizer, App Service, AKS, Azure SQL DB, etc.). Stored
+        # in session_state under key `compute_mode` so any pillar can
+        # read it without prop-drilling.
+        _cm_keys = list(COMPUTE_MODES.keys())
+        _saved_cm = _prefs.get("compute_mode") or DEFAULT_COMPUTE_MODE
+        _cm_idx = _cm_keys.index(_saved_cm) if _saved_cm in _cm_keys else _cm_keys.index(DEFAULT_COMPUTE_MODE)
+        compute_mode = st.radio(
+            "Compute mode (applies across pillars)",
+            _cm_keys,
+            format_func=lambda k: COMPUTE_MODES[k]["label"],
+            index=_cm_idx,
+            help=(
+                "Biases SKU/tier selection globally:\n"
+                "• Saving → Burstable VMs / Basic App Service / Serverless SQL\n"
+                "• Normal → D-series VMs / Premium v3 App Service / GP SQL\n"
+                "• High Performance → E/F-series VMs / P2v3+/Business Critical\n\n"
+                "Detection of non-prod (UAT/dev/test/staging/SIT/QA/preprod) "
+                "happens automatically — when Saving is on, those workloads "
+                "land on Burstable even if the doc didn't ask for it. You "
+                "can always override per-pillar inside each expander."
+            ),
+        )
+        st.session_state["compute_mode"] = compute_mode
 
         st.markdown("**Azure Hybrid Benefit (BYOL + SA)**")
         use_ahb_windows = st.checkbox(
@@ -627,7 +655,7 @@ for pk in active_pillars:
 
             sim_cache_key = (
                 f"_sim::{hash(upload_bytes)}::{upload_name}::{pk}::"
-                f"{sorted((prior_answers or {}).items())}"
+                f"{sorted((prior_answers or {}).items())}::{compute_mode}"
             )
             if sim_cache_key in st.session_state:
                 sim = st.session_state[sim_cache_key]
@@ -650,6 +678,7 @@ for pk in active_pillars:
                             filename=upload_name,
                             api_key=anthropic_key,
                             prior_answers=prior_answers,
+                            compute_mode=compute_mode,
                         )
                     st.session_state[sim_cache_key] = sim
                     st.session_state["_last_sim_call_ts"] = _time.monotonic()
@@ -731,6 +760,10 @@ for pk, pin in pillar_inputs.items():
         continue
     pin["__use_ahb__"] = bool(use_ahb_windows)
     pin["__use_ahb_sql__"] = bool(use_ahb_sql)
+    # Global compute-mode (Saving / Normal / High-Performance) is read
+    # by every pillar that picks SKU / tier. Sidebar `Pricing` expander
+    # writes it to session_state on every render.
+    pin["__compute_mode__"] = str(st.session_state.get("compute_mode", DEFAULT_COMPUTE_MODE))
 
 # ---------------- Stage C: generate BOM (fan-out across active pillars) ----------------
 st.subheader("4. Generate assessment")
@@ -827,6 +860,7 @@ if _btn_clicked or _should_auto_generate:
             "region": region,
             "currency": currency,
             "pricing_mode": pricing_mode,
+            "compute_mode": compute_mode,
             "use_ahb_windows": use_ahb_windows,
             "use_ahb_sql": use_ahb_sql,
             "active_pillars": active_pillars,
@@ -834,7 +868,6 @@ if _btn_clicked or _should_auto_generate:
             "include_lz": ls_in.get("include_lz", True),
             "include_ha": ls_in.get("include_ha", False),
             "include_bcdr": ls_in.get("include_bcdr", False),
-            "cost_saving_mode": ls_in.get("cost_saving_mode", False),
             "lz_selected": ls_in.get("lz_selected", []),
             "lz_preset": ls_in.get("lz_preset", "Standard"),
             "sec_enabled": sec_in.get("enabled", []),
