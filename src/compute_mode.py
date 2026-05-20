@@ -587,6 +587,24 @@ def _flatten_text(x: Any) -> str:
     return str(x)
 
 
+# Chatbot-style AI use cases need a deployed frontend somewhere; the
+# backend (OpenAI tokens + AI Search) by itself isn't a usable product.
+# Default to Azure App Service for code-first chatbots, with mode-tiered
+# SKU. Copilot Studio is a low-code alternative mentioned in the
+# rationale when relevant.
+_CHATBOT_USE_CASES: tuple = (
+    "chatbot_internal", "chatbot_customer", "rag_docs", "general",
+)
+_FRONTEND_APP_SVC_BY_MODE = {
+    "saving":    {"sku": "B1",   "monthly_estimate": 55,
+                  "rationale": "Basic B1 — cheapest functional App Service for a small chatbot."},
+    "normal":    {"sku": "P0v3", "monthly_estimate": 56,
+                  "rationale": "Premium v3 P0v3 — production-grade entry tier (~1 vCPU / 4 GB), same price as Standard S3."},
+    "high_perf": {"sku": "P1v3", "monthly_estimate": 110,
+                  "rationale": "Premium v3 P1v3 (~2 vCPU / 8 GB) for higher concurrent users + headroom."},
+}
+
+
 def apply_ai_application_baselines(
     mode: str, prefs: Dict[str, Any], *,
     wants_gpu: bool = False,
@@ -634,6 +652,26 @@ def apply_ai_application_baselines(
 
     if wants_gpu and _is_empty(prefs.get("gpu_vm")):
         prefs["gpu_vm"] = dict(_GPU_VM_BY_MODE[mode])
+
+    # Chatbot frontend — RAG / chat / Q&A apps need a UI deployed
+    # somewhere. Default to Azure App Service (Premium v3 in normal/HP,
+    # Basic B1 in saving). Copilot Studio is an alternative (low-code,
+    # pay-per-message) the user can pick via the m365_and_others
+    # pillar instead — flagged in the rationale.
+    if use_case in _CHATBOT_USE_CASES and _is_empty(prefs.get("frontend_deployment")):
+        spec = _FRONTEND_APP_SVC_BY_MODE[mode]
+        prefs["frontend_deployment"] = {
+            "type": "app_service",
+            "sku": spec["sku"],
+            "count": 1,
+            "os_windows": False,
+        }
+        prefs["__frontend_rationale__"] = (
+            f"Chatbot frontend: App Service {spec['sku']} × 1 (Linux) "
+            f"(~${spec['monthly_estimate']}/mo). {spec['rationale']} "
+            f"Alternative: Copilot Studio (low-code, pay-per-message) — "
+            f"add via the M365 & Others pillar if no custom code is needed."
+        )
 
     return prefs
 

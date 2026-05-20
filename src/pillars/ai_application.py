@@ -626,6 +626,37 @@ def build_bom(client, region: str, inputs: dict, app_name: str, pricing_mode: st
             use_ahb=bool(inputs.get("__use_ahb__", False)),
         ))
 
+    # Chatbot frontend — when the AI baseline detected a chatbot/RAG
+    # use case it seeds `frontend_deployment = {type: app_service, sku:
+    # P0v3, ...}`. Emit the App Service line directly so the user
+    # doesn't also have to enable the Modernization pillar just for
+    # the chatbot UI. Re-uses the existing `_app_service_line` builder.
+    fe = inputs.get("frontend_deployment") or {}
+    if fe.get("type") == "app_service" and fe.get("sku") and fe["sku"] != "none":
+        from .infra_modernization import _app_service_line as _emit_app_service
+        fe_line = _emit_app_service(
+            client, region,
+            plan_sku=fe["sku"],
+            count=int(fe.get("count", 1)),
+            os_is_windows=bool(fe.get("os_windows", False)),
+            pricing_mode=pricing_mode,
+            app_name=f"{app_name}-Chatbot" if app_name else "Chatbot",
+        )
+        if fe_line:
+            # Re-label so the Results table makes it obvious this is the
+            # chatbot's frontend, not a generic modernization line.
+            fe_line.resource = (
+                f"Chatbot frontend — Azure App Service {fe['sku']} "
+                f"({'Windows' if fe.get('os_windows') else 'Linux'})"
+            )
+            fe_line.assumption = (
+                "Auto-added: chatbot use case requires a deployed UI. "
+                "Disable this pillar's `frontend_deployment` or change "
+                "to Copilot Studio (M365 & Others pillar) if the "
+                "customer wants a low-code path."
+            )
+            lines.append(fe_line)
+
     ft = inputs.get("finetune", {})
     if ft.get("model") and ft["model"] != "none":
         l = _openai_finetune_line(client, region, ft["model"], ft.get("tokens_1k", 0.0), app_name)

@@ -921,6 +921,9 @@ for pk in active_pillars:
         _ai_fallback = merged_prefs.pop("__ai_model_fallback_note__", "")
         if _ai_fallback:
             _alog[pk].append(_ai_fallback)
+        _fe_rationale = merged_prefs.pop("__frontend_rationale__", "")
+        if _fe_rationale:
+            _alog[pk].append(_fe_rationale)
         _defender_rationale = merged_prefs.pop("__defender_rationale__", "")
         if _defender_rationale:
             _alog[pk].append(_defender_rationale)
