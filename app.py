@@ -755,7 +755,33 @@ for pk, pin in pillar_inputs.items():
 
 # ---------------- Stage C: generate BOM (fan-out across active pillars) ----------------
 st.subheader("4. Generate assessment")
-if st.button("Generate BOM", type="primary"):
+
+# Auto-fire Generate on the first render of a fresh (upload × pillars × auto-sim)
+# combo so non-lift-shift pillars produce a "v1 BOM" immediately from the
+# doc-derived assumptions — user fine-tunes via the widgets above and clicks
+# Re-generate to refresh. Without this, those pillars look empty until the
+# user discovers the Generate button.
+_auto_gen_key = (
+    f"_auto_gen::{hash(tuple(u['bytes'] for u in uploads))}::"
+    f"{','.join(sorted(active_pillars))}"
+)
+_should_auto_generate = (
+    auto_sim_enabled
+    and bool(anthropic_key)
+    and _auto_gen_key not in st.session_state
+)
+if _should_auto_generate:
+    st.session_state[_auto_gen_key] = True
+    st.info(
+        "✨ Auto-generating a first-pass BOM from doc-derived assumptions. "
+        "Adjust the inputs above and click **🔁 Re-generate** to refresh."
+    )
+
+_already_have_bom = "bom_lines" in st.session_state
+_btn_label = "🔁 Re-generate BOM" if _already_have_bom else "📊 Generate BOM"
+_btn_clicked = st.button(_btn_label, type="primary")
+
+if _btn_clicked or _should_auto_generate:
     with st.spinner("Pricing via Azure Retail Prices API…"):
         client = RetailPricesClient(currency=currency)
         all_lines: list = []
