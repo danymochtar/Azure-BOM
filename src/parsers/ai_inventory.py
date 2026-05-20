@@ -230,16 +230,26 @@ def ai_extract_direct(
 
     # max_retries > default so transient 429s back off and retry automatically
     client = anthropic.Anthropic(api_key=api_key, max_retries=4)
-    response = client.messages.parse(
-        model=model,
-        max_tokens=16000,
-        system=[
-            {"type": "text", "text": DIRECT_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
-        ],
-        messages=[{"role": "user", "content": user_content}],
-        output_format=DirectExtraction,
+
+    def _invoke(m: str):
+        return client.messages.parse(
+            model=m,
+            max_tokens=16000,
+            system=[
+                {"type": "text", "text": DIRECT_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
+            ],
+            messages=[{"role": "user", "content": user_content}],
+            output_format=DirectExtraction,
+        )
+
+    # Caller's preferred model first; fall back to Opus on overload.
+    from ..llm import call_with_cascade
+    cascade = (model,) if model == "claude-opus-4-7" else (model, "claude-opus-4-7")
+    response = call_with_cascade(
+        process_label="Inventory extraction (direct)",
+        cascade=cascade,
+        invoke=_invoke,
     )
-    usage_tracker.record("Inventory extraction (direct)", model, getattr(response, "usage", None))
     return response.parsed_output
 
 
@@ -283,26 +293,34 @@ def ai_generate_mapping(
     preview = _build_preview(sheets, sample_rows=12)
     client = anthropic.Anthropic(api_key=api_key, max_retries=4)
 
-    response = client.messages.parse(
-        model=model,
-        max_tokens=16000,
-        system=[
-            {"type": "text", "text": MAPPING_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
-        ],
-        messages=[
-            {
-                "role": "user",
-                "content": (
-                    f"File: {filename}\n\n"
-                    f"Preview of every sheet with headers and sample rows:\n\n"
-                    f"{preview}\n\n"
-                    "Produce the InventoryMapping for this file."
-                ),
-            }
-        ],
-        output_format=InventoryMapping,
+    def _invoke(m: str):
+        return client.messages.parse(
+            model=m,
+            max_tokens=16000,
+            system=[
+                {"type": "text", "text": MAPPING_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
+            ],
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        f"File: {filename}\n\n"
+                        f"Preview of every sheet with headers and sample rows:\n\n"
+                        f"{preview}\n\n"
+                        "Produce the InventoryMapping for this file."
+                    ),
+                }
+            ],
+            output_format=InventoryMapping,
+        )
+
+    from ..llm import call_with_cascade
+    cascade = (model,) if model == "claude-opus-4-7" else (model, "claude-opus-4-7")
+    response = call_with_cascade(
+        process_label="Inventory extraction (mapping)",
+        cascade=cascade,
+        invoke=_invoke,
     )
-    usage_tracker.record("Inventory extraction (mapping)", model, getattr(response, "usage", None))
     return response.parsed_output, sheets
 
 

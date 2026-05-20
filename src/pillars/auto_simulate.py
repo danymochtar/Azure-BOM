@@ -27,11 +27,14 @@ import anthropic
 from pydantic import BaseModel, Field
 
 from .. import usage_tracker
+from ..llm import SONNET_TO_OPUS, call_with_cascade
 from ..parsers.content import prepare as _prepare_content
 from .ai_application import AZURE_FOUNDRY_MODELS, AZURE_OPENAI_MODELS, COGNITIVE_SERVICES
 
 
-MODEL = "claude-sonnet-4-6"
+# Sonnet by default; falls back to Opus on OverloadedError (529) via
+# `call_with_cascade`.
+MODEL = SONNET_TO_OPUS[0]
 
 # Auto-simulate doesn't need every row of an RVTools-sized export — it only
 # needs to understand the SHAPE of the workload (sheet names, headers, row
@@ -299,14 +302,21 @@ def simulate(
     client = anthropic.Anthropic(api_key=api_key, max_retries=4)
 
     def _call(blocks):
-        return client.messages.parse(
-            model=MODEL,
-            max_tokens=8000,
-            system=[
-                {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
-            ],
-            messages=[{"role": "user", "content": blocks}],
-            output_format=PillarSimulation,
+        def _invoke(model: str):
+            return client.messages.parse(
+                model=model,
+                max_tokens=8000,
+                system=[
+                    {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
+                ],
+                messages=[{"role": "user", "content": blocks}],
+                output_format=PillarSimulation,
+            )
+        # Sonnet → Opus cascade on OverloadedError (529).
+        return call_with_cascade(
+            process_label=f"Auto-simulate ({pillar})",
+            cascade=SONNET_TO_OPUS,
+            invoke=_invoke,
         )
 
     try:
@@ -341,16 +351,9 @@ def simulate(
                 ),
             }
         ]
-        response = client.messages.parse(
-            model=MODEL,
-            max_tokens=8000,
-            system=[
-                {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
-            ],
-            messages=[{"role": "user", "content": fallback_content}],
-            output_format=PillarSimulation,
-        )
-    usage_tracker.record(f"Auto-simulate ({pillar})", MODEL, getattr(response, "usage", None))
+        # Second-pass fallback also goes through the Sonnet → Opus
+        # cascade since the same Sonnet model might still be overloaded.
+        response = _call(fallback_content)
     sim = response.parsed_output
     sim.pillar = pillar  # defensive
     return sim

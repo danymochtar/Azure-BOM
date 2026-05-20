@@ -26,10 +26,14 @@ import anthropic
 from pydantic import BaseModel, Field
 
 from .. import usage_tracker
+from ..llm import HAIKU_TO_OPUS, call_with_cascade
 from .content import prepare as _prepare_content
 
 
-MODEL = "claude-haiku-4-5"
+# Default model is Haiku for speed/cost; on `OverloadedError` (HTTP 529)
+# we cascade to Sonnet, then Opus via `call_with_cascade`. The `MODEL`
+# constant stays for callers that introspect the default.
+MODEL = HAIKU_TO_OPUS[0]
 
 
 # Back-compat: saved prefs / old clients may still use the earlier strings.
@@ -168,16 +172,23 @@ def classify(data: bytes, filename: str, api_key: str) -> AssessmentProfile:
     ]
 
     client = anthropic.Anthropic(api_key=api_key, max_retries=4)
-    response = client.messages.parse(
-        model=MODEL,
-        max_tokens=2000,
-        system=[
-            {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
-        ],
-        messages=[{"role": "user", "content": user_content}],
-        output_format=AssessmentProfile,
+
+    def _invoke(model: str):
+        return client.messages.parse(
+            model=model,
+            max_tokens=2000,
+            system=[
+                {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
+            ],
+            messages=[{"role": "user", "content": user_content}],
+            output_format=AssessmentProfile,
+        )
+
+    response = call_with_cascade(
+        process_label="Workload classifier",
+        cascade=HAIKU_TO_OPUS,
+        invoke=_invoke,
     )
-    usage_tracker.record("Workload classifier", MODEL, getattr(response, "usage", None))
 
     profile = response.parsed_output
     # Resolve legacy strings from older prompts to new pillar keys
