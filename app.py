@@ -36,7 +36,43 @@ from src.pricing.retail import BILLING_TERMS, RetailPricesClient
 from src import storage, usage_tracker
 
 
-st.set_page_config(page_title="Azure Cost Assessment", page_icon="$", layout="wide")
+st.set_page_config(page_title="Azure Cost Assessment", page_icon="☁", layout="wide")
+
+
+# ---------------- UI polish — inline CSS injected once per render ----------------
+# `theme="login"` paints the page with a soft Azure-blue background and
+# centres the form card. `theme="app"` reverts to a clean white workspace
+# for the BOM table + downloads. Both themes hide the Streamlit footer
+# + main menu so the surface reads as a bespoke app, not a debug
+# notebook. Targets only stable Streamlit class names.
+def _inject_css(theme: str) -> None:
+    base = """
+    <style>
+      #MainMenu, footer, [data-testid="stToolbar"] { visibility: hidden; }
+      h1 { font-weight: 700; letter-spacing: -0.02em; }
+      .stButton > button[kind="primary"] {
+          box-shadow: 0 2px 6px rgba(0, 120, 212, 0.25);
+          transition: transform 80ms ease, box-shadow 80ms ease;
+      }
+      .stButton > button[kind="primary"]:hover {
+          transform: translateY(-1px);
+          box-shadow: 0 4px 12px rgba(0, 120, 212, 0.35);
+      }
+    </style>
+    """
+    login = """
+    <style>
+      .stApp {
+          background: linear-gradient(180deg, #eef4fb 0%, #f7faff 100%);
+      }
+      div[data-testid="stVerticalBlockBorderWrapper"] {
+          background: #ffffff;
+          box-shadow: 0 6px 24px rgba(0, 60, 120, 0.10);
+          border-radius: 14px;
+      }
+    </style>
+    """
+    st.markdown(base + (login if theme == "login" else ""), unsafe_allow_html=True)
 
 
 # ---------------- Access control ----------------
@@ -47,7 +83,7 @@ _AUTH_PASS = "noventiqazure"
 
 
 def _require_login() -> None:
-    """Render a login form and st.stop() until the correct creds are entered."""
+    """Render the login experience and st.stop() until creds are valid."""
     if st.session_state.get("_authed"):
         return
     # Persistent login flag from localStorage (opt-in, client-trustable only)
@@ -55,35 +91,102 @@ def _require_login() -> None:
         st.session_state["_authed"] = True
         return
 
-    st.title("Azure Cost Assessment — Sign in")
-    with st.form("_login_form"):
-        u = st.text_input("Username")
-        p = st.text_input("Password", type="password")
-        remember = st.checkbox("Remember me on this browser", value=True)
-        submit = st.form_submit_button("Sign in", type="primary")
-    if submit:
-        ok_user = hmac.compare_digest(u or "", _AUTH_USER)
-        ok_pass = hmac.compare_digest(p or "", _AUTH_PASS)
-        if ok_user and ok_pass:
-            st.session_state["_authed"] = True
-            if remember:
-                storage.save_auth_ok()
-            st.rerun()
-        else:
-            st.error("Invalid credentials.")
+    _inject_css("login")
+
+    # Hero — large Azure-blue heading. Centred via a 3-column grid;
+    # the card itself anchors to the middle column.
+    _, hero, _ = st.columns([1, 2, 1])
+    with hero:
+        st.markdown(
+            "<div style='text-align:center; padding: 2.5rem 0 1rem 0;'>"
+            "<div style='font-size: 3.2rem; line-height: 1; "
+            "color: #0078d4;'>☁</div>"
+            "<h1 style='margin: 0.4rem 0 0.2rem 0; color: #1a1f36;'>"
+            "Azure Cost Assessment</h1>"
+            "<p style='color: #5a6477; font-size: 1.05rem; margin: 0;'>"
+            "Upload anything. Get an Azure-priced BOM."
+            "</p></div>",
+            unsafe_allow_html=True,
+        )
+
+        with st.container(border=True):
+            st.markdown(
+                "<div style='padding: 0.4rem 0.4rem 0 0.4rem;'>"
+                "<h3 style='margin-top: 0;'>🔐 Sign in</h3>"
+                "</div>",
+                unsafe_allow_html=True,
+            )
+            with st.form("_login_form", clear_on_submit=False):
+                u = st.text_input("Username", placeholder="admin")
+                p = st.text_input("Password", type="password",
+                                  placeholder="••••••••••••")
+                remember = st.checkbox("Remember me on this browser", value=True)
+                submit = st.form_submit_button(
+                    "Sign in", type="primary", use_container_width=True,
+                )
+
+            if submit:
+                ok_user = hmac.compare_digest(u or "", _AUTH_USER)
+                ok_pass = hmac.compare_digest(p or "", _AUTH_PASS)
+                if ok_user and ok_pass:
+                    st.session_state["_authed"] = True
+                    if remember:
+                        storage.save_auth_ok()
+                    st.rerun()
+                else:
+                    st.error("Invalid credentials.")
+
+        st.markdown(
+            "<div style='text-align:center; padding: 1.2rem 0 2rem 0; "
+            "color: #7a8294; font-size: 0.85rem;'>"
+            "Built for Noventiq · Powered by the "
+            "<a href='https://prices.azure.com/api/retail/prices' "
+            "style='color:#0078d4; text-decoration:none;'>Azure Retail "
+            "Prices API</a> · Microsoft CAF-aligned"
+            "</div>",
+            unsafe_allow_html=True,
+        )
     st.stop()
 
 
 _require_login()
+_inject_css("app")
 
 
-st.title("Azure Cost Assessment")
-st.caption(
-    "Upload anything — VM inventory, SIEM design, AI use-case, data-platform "
-    "spec, or a mixed architecture doc. The workload is classified first and "
-    "only the relevant pricing models run. Output matches Microsoft's Azure "
-    "Pricing Calculator export template."
-)
+# ---------------- Post-login header ----------------
+# Two-column hero row: branded title on the left, signed-in badge +
+# sign-out button on the right. Replaces the buried "Sign out" hidden
+# inside the Browser-storage sub-expander.
+_head_l, _head_r = st.columns([6, 2])
+with _head_l:
+    st.markdown(
+        "<div style='display:flex; align-items:baseline; gap:0.6rem; "
+        "margin-top:0.4rem;'>"
+        "<span style='font-size:2.2rem; color:#0078d4; line-height:1;'>☁</span>"
+        "<h1 style='margin:0; color:#1a1f36;'>Azure Cost Assessment</h1>"
+        "</div>"
+        "<p style='color:#5a6477; margin:0.3rem 0 1rem 0; font-size:1rem;'>"
+        "Upload anything — VM inventory, SIEM design, AI use-case, mixed "
+        "architecture — get a CAF-aligned Azure BOM."
+        "</p>",
+        unsafe_allow_html=True,
+    )
+with _head_r:
+    st.markdown(
+        "<div style='text-align:right; padding-top:0.8rem;'>"
+        f"<span style='display:inline-block; padding:4px 10px; "
+        f"background:#eaf4fc; color:#0078d4; border-radius:999px; "
+        f"font-size:0.85rem; font-weight:500;'>🟢 Signed in as "
+        f"<code style='color:#0078d4; background:transparent;'>"
+        f"{_AUTH_USER}</code></span>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    if st.button("Sign out", key="header_sign_out",
+                 use_container_width=True):
+        storage.clear_auth_ok()
+        st.session_state.pop("_authed", None)
+        st.rerun()
 
 # ---------------- Load persisted preferences (browser localStorage) ----------------
 _prefs = storage.load_prefs()
@@ -118,7 +221,17 @@ if "_session_fresh_init" not in st.session_state:
 # ---------------- Sidebar: configuration + AI key ----------------
 # Grouped into three expanders so the sidebar fits one screen.
 with st.sidebar:
-    st.header("Configuration")
+    st.markdown(
+        "<div style='padding: 0.2rem 0 0.4rem 0;'>"
+        "<div style='font-size:1.6rem; color:#0078d4; line-height:1;'>☁ "
+        "<span style='font-size:1.1rem; color:#1a1f36; font-weight:600;'>"
+        "Configuration</span></div>"
+        "<div style='color:#7a8294; font-size:0.78rem; margin-top:2px;'>"
+        f"Signed in as <code style='background:transparent; "
+        f"color:#0078d4;'>{_AUTH_USER}</code></div>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
 
     # ===== 🛠 Workload =====
     with st.expander("🛠 Workload", expanded=True):
@@ -253,10 +366,9 @@ with st.sidebar:
             storage.clear_all()
             st.session_state.pop("_authed", None)
             st.rerun()
-        if st.button("Sign out"):
-            storage.clear_auth_ok()
-            st.session_state.pop("_authed", None)
-            st.rerun()
+        # The "Sign out" button used to live here; moved up to the
+        # post-login header (right-column badge) so it's always visible
+        # without expanding Advanced → Browser storage.
 
 # ---------------- Upload ----------------
 st.subheader("1. Upload workload description(s)")
