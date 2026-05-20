@@ -489,7 +489,7 @@ LANDING_ZONE_COMPONENTS: List[LzComponent] = [
             f"serviceName eq 'Automation' and armRegionName eq '{region}' "
             f"and priceType eq 'Consumption'"
         ),
-        pick=_contains("process automation"),
+        pick=_contains("runbook"),
         notes=(
             "Per-minute runbook execution charge. First 500 min/month free. "
             "Typical hub runs 2-5k min/month for patch + compliance jobs."
@@ -521,10 +521,10 @@ LANDING_ZONE_COMPONENTS: List[LzComponent] = [
         quantity=10.0,
         unit="GB",
         build_filter=lambda region: (
-            f"serviceName eq 'Azure Monitor' and armRegionName eq '{region}' "
+            f"serviceName eq 'Application Insights' and armRegionName eq '{region}' "
             f"and priceType eq 'Consumption'"
         ),
-        pick=_contains_all("application insights", "data"),
+        pick=_contains("data"),
         notes=(
             "App telemetry ingestion. First 5 GB/mo free per workspace. "
             "Default 10 GB/mo for a small app; scale with active-user count."

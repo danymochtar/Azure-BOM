@@ -60,8 +60,12 @@ def _retail_or_static_line(
 
     chosen = None
     if retail_service_name and retail_meter_hint:
+        # M365 / Copilot Studio meters are tenant-global in the Retail Prices
+        # feed (armRegionName is empty or 'Global'), so omit the region filter
+        # — including it returns zero records and forces the static fallback
+        # even when retail has the meter.
         recs = client.query(
-            f"serviceName eq '{retail_service_name}' and armRegionName eq '{region}' "
+            f"serviceName eq '{retail_service_name}' "
             f"and priceType eq 'Consumption'"
         )
         chosen = _pick(recs, retail_meter_hint) if recs else None
