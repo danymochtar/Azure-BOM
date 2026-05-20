@@ -197,14 +197,28 @@ def test_data_platform_baseline_preserves_user_pick():
 
 # ---- Defender baseline (CAF-mandatory cross-pillar) ----------------
 
-def test_defender_baseline_basic_preset():
+def test_defender_baseline_basic_preset_uses_plan_1():
+    """Basic / Foundation CAF tiers route to Defender Servers Plan 1
+    (~$5/server/mo) — cost-conscious for dev/test-heavy footprints."""
     plans, _, _ = recommend_defender_baseline(
         "Basic", "Generic VM workload", vm_count=10,
     )
     assert "cspm" in plans
-    assert "servers_p2" in plans
+    assert "servers_p1" in plans
+    assert "servers_p2" not in plans
     # Basic shouldn't include enterprise-tier additions
     assert "private_link" not in plans
+
+
+def test_defender_baseline_standard_preset_uses_plan_2():
+    """Standard / Enterprise CAF tiers upgrade to Plan 2
+    (~$15/server/mo) — production needs FIM + JIT + adaptive controls
+    + compliance dashboard."""
+    plans, _, _ = recommend_defender_baseline(
+        "Standard", "Generic prod workload", vm_count=20,
+    )
+    assert "servers_p2" in plans
+    assert "servers_p1" not in plans
 
 
 def test_defender_baseline_workload_triggers():

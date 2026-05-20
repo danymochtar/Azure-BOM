@@ -61,34 +61,36 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
             format_func=lambda k: MIGRATION_STRATEGIES[k]["label"],
             index=strategy_idx,
         )
-        # Sizing policy: default is 1:1 exact match; if the source spec
-        # doesn't line up with a catalog SKU the mapper falls back to the
-        # smallest / cheapest SKU whose capacity still covers the workload.
-        # Users can opt-in to a safety margin for noisy on-prem sizing data.
-        headroom_mode = st.radio(
-            "Sizing policy",
-            ["1:1 (exact match, else nearest cost-optimized)", "Add safety margin"],
-            index=0 if float(prefs.get("headroom", 1.0)) <= 1.001 else 1,
-            horizontal=False,
-            help=(
-                "1:1 matches the source spec to an Azure SKU with the same "
-                "vCPU + memory when possible (e.g. 4 vCPU / 16 GB → D4s v5). "
-                "If no exact match exists, the mapper picks the SMALLEST "
-                "SKU whose capacity still covers the spec (cheapest fit). "
-                "Pick 'Add safety margin' only when the source inventory "
-                "under-reports utilisation."
-            ),
-        )
-        if headroom_mode.startswith("1:1"):
-            headroom = 1.0
-            st.caption("Policy: 1:1 exact match → else nearest cost-optimized SKU.")
-        else:
+        # Sizing policy — 1:1 exact match is the right answer for
+        # Saving and Normal modes (cheaper SKU at same spec; padding
+        # silently inflates the bill). Only High-Performance mode
+        # exposes the safety-margin slider since HP customers
+        # explicitly want headroom for bursty / latency-sensitive
+        # workloads.
+        _cm = str(prefs.get("__compute_mode__", "normal"))
+        if _cm == "high_perf":
             headroom = st.slider(
-                "Safety margin (multiplier applied to vCPU + memory)",
-                1.05, 2.0,
-                max(1.05, float(prefs.get("headroom", 1.3))),
+                "Safety margin (HP mode — multiplier on vCPU + memory)",
+                1.0, 2.0,
+                max(1.0, float(prefs.get("headroom", 1.3))),
                 step=0.05,
-                help="1.1 = +10% padding; 1.3 = +30%; etc.",
+                help=(
+                    "1.0 = 1:1 exact match (cost-optimised). 1.2 = +20% "
+                    "padding for bursty / latency-sensitive workloads. "
+                    "1.5 = +50% for hot-path / regulated workloads where "
+                    "right-sized means throttling under load."
+                ),
+            )
+            st.caption(
+                f"HP mode: applying +{int((headroom - 1.0) * 100)}% headroom "
+                "on vCPU + memory. Switch to Normal mode (step 2) to force 1:1."
+            )
+        else:
+            headroom = 1.0
+            st.caption(
+                "Sizing policy: **1:1 exact match** (cost-optimised). "
+                "Switch to High-Performance compute mode in step 2 to "
+                "expose the safety-margin slider."
             )
         disk_opts = ["Premium SSD", "Standard SSD", "Standard HDD"]
         # Default flipped from Premium SSD → Standard SSD to match
@@ -536,13 +538,30 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
                         ),
                     )
                 if "firewall_data" in _lz_set or "firewall" in _lz_set or "firewall_premium" in _lz_set:
+                    # MS Learn guidance: hub-routed traffic averages
+                    # ~10 GB / VM / month (OS patches + inter-VM +
+                    # outbound web). Saving mode skews to ~5 GB; HP
+                    # mode to ~30 GB for chatty workloads. Minimum
+                    # 100 GB/mo so a no-VM-yet assessment still emits
+                    # a non-zero line. Saved user value (if any) wins.
+                    _saved_fw = int(prefs.get("firewall_gb_processed", 0))
+                    if _saved_fw <= 0:
+                        _vm_count_export = int(
+                            (prefs.get("__exports__") or {}).get("vm_count", 0)
+                            or len(items or [])
+                        )
+                        _per_vm = {"saving": 5, "normal": 10, "high_perf": 30}.get(_cm, 10)
+                        _saved_fw = max(100, _vm_count_export * _per_vm)
                     firewall_gb = st.number_input(
                         "Azure Firewall — data processed (GB/month)",
                         min_value=0, max_value=10_000_000,
-                        value=int(prefs.get("firewall_gb_processed", 0)), step=100,
+                        value=_saved_fw, step=100,
                         help=(
-                            "Per-GB processed charge on top of the deployment hour. "
-                            "Leave 0 if the firewall only handles hub idle traffic."
+                            "Per-GB processed charge on top of the deployment "
+                            "hour (Standard ~$0.016/GB, Premium ~$0.030/GB). "
+                            "Default = VM count × 10 GB/VM (5 in Saving mode, "
+                            "30 in HP); minimum 100 GB/mo. Set 0 to drop "
+                            "the line."
                         ),
                     )
             with c2:

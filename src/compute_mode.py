@@ -795,16 +795,17 @@ def apply_hybrid_multicloud_baselines(
 #   purview / data catalog    → purview component
 #   privileged identity / pim → pim component
 
+# CAF "Secure" Defender baseline per landing-zone tier. Picks Plan 1
+# (~$5/server/mo) for Basic / Foundation since those tiers carry more
+# non-prod / dev/test workloads; upgrades to Plan 2 (~$15/server/mo)
+# for Standard / Enterprise where production workloads need FIM + JIT
+# + adaptive controls + the compliance dashboard.
+# Source: https://learn.microsoft.com/en-us/azure/defender-for-cloud/plan-defender-for-servers-select-plan
 _LZ_PRESET_SECURITY_BASELINE: Dict[str, List[str]] = {
-    "Basic":      ["cspm", "servers_p2"],
-    "Foundation": ["cspm", "servers_p2", "storage", "keyvault"],
-    # Standard adds plane-level coverage (DNS + Resource Manager) +
-    # Sentinel ingestion, per CAF "Secure" methodology.
+    "Basic":      ["cspm", "servers_p1"],
+    "Foundation": ["cspm", "servers_p1", "storage", "keyvault"],
     "Standard":   ["cspm", "servers_p2", "storage", "keyvault", "sentinel",
                    "dns", "rm"],
-    # Enterprise extends with private-link / PIM and pre-arms the
-    # advanced Defender plans Microsoft recommends for enterprise
-    # landing zones with mixed workloads.
     "Enterprise": ["cspm", "servers_p2", "storage", "keyvault", "sentinel",
                    "dns", "rm", "private_link", "pim"],
 }

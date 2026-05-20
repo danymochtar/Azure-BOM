@@ -23,6 +23,16 @@ class DefenderPlan:
     pick_substring: str               # meter-name substring to disambiguate
     count_source: str                 # "vms" | "manual"
     notes: str = ""
+    # Extra disambiguation for plans whose meter names overlap. The
+    # canonical case: "Standard P1 Node" vs "Standard P2 Node" both
+    # contain the substring "Servers" so a generic picker can't tell
+    # them apart and `cheapest_nonzero` picks P1 ($0.0067/hr) when
+    # the line is labelled P2 ($0.0205/hr). When set, the picker
+    # filters records to those containing ALL `pick_all` tokens AND
+    # none of the `pick_exclude` tokens, then takes the cheapest
+    # non-zero match.
+    pick_all: tuple = ()
+    pick_exclude: tuple = ()
 
 
 def _filter(service: str, region: str) -> str:
@@ -34,14 +44,44 @@ def _filter(service: str, region: str) -> str:
 
 DEFENDER_PLANS: List[DefenderPlan] = [
     DefenderPlan(
-        key="servers_p2",
-        resource="Defender for Servers Plan 2",
-        default_enabled=True,
+        key="servers_p1",
+        resource="Defender for Servers Plan 1",
+        default_enabled=False,
         unit="Server/month",
         build_filter=lambda r: _filter("Microsoft Defender for Cloud", r),
-        pick_substring="Servers",
+        # Retail meter naming: "Standard P1 Node" → Plan 1
+        # (~$5/server/mo, $0.0067/server-hour).
+        pick_substring="P1 Node",
+        pick_all=("p1 node",),
+        pick_exclude=("p2",),
         count_source="vms",
-        notes="Per protected server (Linux/Windows). P2 includes EDR integration, FIM, JIT.",
+        notes=(
+            "Plan 1 — basic CWP: threat detection, vulnerability "
+            "assessment, EDR (Defender for Endpoint P2). Recommended "
+            "for non-prod, dev/test, or cost-sensitive prod where "
+            "FIM + JIT aren't required. ~$5/server/month."
+        ),
+    ),
+    DefenderPlan(
+        key="servers_p2",
+        resource="Defender for Servers Plan 2",
+        default_enabled=False,
+        unit="Server/month",
+        build_filter=lambda r: _filter("Microsoft Defender for Cloud", r),
+        # Retail meter naming: "Standard P2 Node" → Plan 2
+        # (~$15/server/mo, $0.0205/server-hour). Must NOT collapse to
+        # the cheaper P1 meter (the bug user caught).
+        pick_substring="P2 Node",
+        pick_all=("p2 node",),
+        pick_exclude=(),
+        count_source="vms",
+        notes=(
+            "Plan 2 — Plan 1 + File Integrity Monitoring, Just-In-Time "
+            "VM access, adaptive app controls + network hardening, "
+            "regulatory compliance dashboard, 500 MB free Log Analytics "
+            "per server. Recommended for production + regulated "
+            "workloads. ~$15/server/month."
+        ),
     ),
     DefenderPlan(
         key="sql_on_vms",
@@ -175,7 +215,22 @@ def build_defender_bom(
         if qty <= 0:
             continue
         records = client.query(plan.build_filter(region), max_pages=5)
-        chosen = _pick(records, plan.pick_substring)
+        # Precise pick_all + pick_exclude path when the plan defines
+        # disambiguation tokens (Plan 1 vs Plan 2 etc.). Falls back to
+        # the legacy substring picker if the strict filter empties out.
+        if plan.pick_all or plan.pick_exclude:
+            from ..pricing.picker import cheapest_nonzero as _cheapest_nz
+            _cands = []
+            for r in records:
+                low = r.meter_name.lower()
+                if not all(t in low for t in plan.pick_all):
+                    continue
+                if any(e in low for e in plan.pick_exclude):
+                    continue
+                _cands.append(r)
+            chosen = _cheapest_nz(_cands) or _pick(records, plan.pick_substring)
+        else:
+            chosen = _pick(records, plan.pick_substring)
         if not chosen:
             lines.append(
                 BomLine(

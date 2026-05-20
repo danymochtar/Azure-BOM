@@ -312,31 +312,76 @@ with st.sidebar:
 
     # ===== ⚙ Advanced =====
     with st.expander("⚙ Advanced", expanded=False):
-        st.markdown("**AI key**")
+        # AI key — resolved silently in priority order, NEVER displayed
+        # in the visible UI (security: previous design showed the key
+        # bytes which is leakable via DevTools / screen recording /
+        # over-shoulder). Priority chain:
+        #   1. `st.secrets["ANTHROPIC_API_KEY"]` — server-side secret
+        #      (preferred path; key never enters the browser)
+        #   2. Browser localStorage (set previously via this UI)
+        #   3. `os.environ["ANTHROPIC_API_KEY"]` — fallback
+        # When a key is loaded we show only a discreet caption with
+        # the source. When missing, a 🔐 sub-expander holds a
+        # type=password input — collapsed so the field doesn't show
+        # by default.
+        import os as _os
         _secrets_key = ""
         try:
             _secrets_key = st.secrets.get("ANTHROPIC_API_KEY", "")
         except Exception:
             pass
-        anthropic_key = st.text_input(
-            "Anthropic API key",
-            type="password",
-            value=_saved_api_key or _secrets_key,
-            help="Required for classification + AI extraction.",
-        )
-        remember_key = st.checkbox(
-            "Remember key in browser (convenience)",
-            value=bool(_saved_api_key),
-            help=(
-                "Stores the key in this browser's localStorage so you don't have to "
-                "paste it again. DO NOT enable on shared/public machines — the key "
-                "is readable via DevTools and any browser extension with page access."
-            ),
-        )
-        if remember_key and anthropic_key and anthropic_key != _saved_api_key:
-            storage.save_api_key(anthropic_key)
-        elif not remember_key and _saved_api_key:
-            storage.clear_api_key()
+        _env_key = _os.environ.get("ANTHROPIC_API_KEY", "")
+        anthropic_key = (_secrets_key or _saved_api_key or _env_key or "").strip()
+        remember_key = bool(_saved_api_key)
+
+        if anthropic_key:
+            _source = (
+                "secrets.toml" if _secrets_key
+                else "browser storage" if _saved_api_key
+                else "environment"
+            )
+            st.caption(f"🔐 Anthropic API key loaded from `{_source}`.")
+            if st.button("Replace API key", key="replace_api_key"):
+                if _saved_api_key:
+                    storage.clear_api_key()
+                st.session_state["_show_api_key_input"] = True
+                st.rerun()
+
+        if not anthropic_key or st.session_state.get("_show_api_key_input"):
+            with st.expander(
+                "🔐 Set Anthropic API key",
+                expanded=(not anthropic_key),
+            ):
+                _new = st.text_input(
+                    "Paste your API key",
+                    type="password",
+                    value="",
+                    placeholder="sk-ant-api03-…",
+                    help=(
+                        "Used for classification + Sonnet extraction. "
+                        "Never logged or echoed back into the UI. "
+                        "Preferred deploy path: set "
+                        "`ANTHROPIC_API_KEY` in "
+                        "`.streamlit/secrets.toml` (server-side) so "
+                        "the key never enters the browser."
+                    ),
+                )
+                _remember = st.checkbox(
+                    "Remember in this browser (convenience)",
+                    value=False,
+                    help=(
+                        "Stores in localStorage. DO NOT enable on "
+                        "shared / public machines — the key is "
+                        "readable via DevTools or any browser "
+                        "extension with page access."
+                    ),
+                )
+                if _new:
+                    anthropic_key = _new.strip()
+                    if _remember:
+                        storage.save_api_key(anthropic_key)
+                    st.session_state["_show_api_key_input"] = False
+                    st.rerun()
 
         st.warning(
             "**Data egress:** when AI features are enabled, a preview of "

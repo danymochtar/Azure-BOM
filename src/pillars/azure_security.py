@@ -30,12 +30,28 @@ SECURITY_COMPONENTS: Dict[str, Dict] = {
         "scales_with": "vms",
         "notes": "Per-resource posture + secure score + regulatory compliance.",
     },
+    "servers_p1": {
+        "label": "Defender for Servers Plan 1 (~$5/server/mo)",
+        "default": False,
+        "scales_with": "vms",
+        "defender_plan": "servers_p1",
+        "notes": (
+            "Basic CWP: threat detection + vulnerability assessment + "
+            "EDR (Defender for Endpoint P2). Recommended for non-prod, "
+            "dev/test, or cost-sensitive prod."
+        ),
+    },
     "servers_p2": {
-        "label": "Defender for Servers Plan 2",
+        "label": "Defender for Servers Plan 2 (~$15/server/mo)",
         "default": True,
         "scales_with": "vms",
         "defender_plan": "servers_p2",
-        "notes": "Per protected VM. Includes EDR integration, FIM, JIT access.",
+        "notes": (
+            "Plan 1 + FIM, JIT VM access, adaptive app controls, "
+            "regulatory compliance dashboard, 500 MB free Log Analytics "
+            "per server. Recommended for production + regulated "
+            "workloads."
+        ),
     },
     "sql_on_vms": {
         "label": "Defender for SQL servers on machines",
