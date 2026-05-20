@@ -817,6 +817,12 @@ for pk in active_pillars:
         _fab_rationale = merged_prefs.pop("__fabric_estimator_rationale__", "")
         if _fab_rationale:
             _alog[pk].append(_fab_rationale)
+        _ai_rationale = merged_prefs.pop("__ai_model_rationale__", "")
+        if _ai_rationale:
+            _alog[pk].append(_ai_rationale)
+        _ai_fallback = merged_prefs.pop("__ai_model_fallback_note__", "")
+        if _ai_fallback:
+            _alog[pk].append(_ai_fallback)
         if effective_mode != compute_mode:
             _alog[pk].append(
                 f"Compute mode override: this pillar uses **{effective_mode}** "

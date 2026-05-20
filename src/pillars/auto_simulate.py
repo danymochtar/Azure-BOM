@@ -244,7 +244,45 @@ Rules:
    pillar — use the exact key names. Unknown / not-relevant keys can be
    omitted entirely.
 9. `len(prefilled_answers)` MUST equal `len(open_questions)` — pair them
-   1:1 by list index."""
+   1:1 by list index.
+10. **AI use-case → model picks (when pillar is `ai_application`).** Detect
+    the use case from the doc and pick the model accordingly. ALWAYS prefer
+    Azure OpenAI 1st-party (runs inside the customer's tenant, SLA + data
+    residency). Only suggest an Azure AI Foundry 3rd-party model when there's
+    a documented reason (open-weight required for compliance, materially
+    cheaper at scale, specific capability gap). Current Oct-2025 picks:
+
+    - **Internal chat / staff Q&A / HR / policy lookup** → `gpt-4o-mini`
+      (saving / normal); `gpt-4o` (high_perf for nuanced policy).
+    - **Customer-facing chatbot** → `gpt-4o-mini` (saving); `gpt-4o`
+      (normal); `gpt-4.1` (high_perf — 1M context, better instruction
+      following). 3rd-party alt: Llama 3.3 70B for cost-at-scale.
+    - **RAG / document Q&A** → `gpt-4o-mini` retrieves + synthesises well
+      enough; `gpt-4o` for multi-hop; `gpt-4.1` for very long context
+      (1M tokens, skip chunking). 3rd-party alt: Cohere Command R+ for
+      hard citation requirements.
+    - **Code assistant** → `gpt-4.1-mini` (saving); `gpt-4.1` (normal,
+      flagship coding); `o3-mini` (high_perf for complex refactoring).
+      3rd-party alt: Codestral for FIM (fill-in-the-middle) tokens.
+    - **Reasoning / math / agentic** → `o3-mini` is the sweet spot;
+      `o3` for hardest problems. 3rd-party alt: DeepSeek-R1 (open-weight,
+      auditable chain-of-thought).
+    - **Summarisation** → `gpt-4o-mini` (sufficient — compression task).
+    - **Translation** → `gpt-4o-mini` (saving); `gpt-4o` (broadest
+      multilingual coverage).
+    - **Vision / OCR** → `gpt-4o-mini` (vision-native, cheap); `gpt-4o`
+      for chart/diagram understanding; `gpt-4.1` for multi-page docs.
+    - **Image generation** → DALL-E 3 (standard / HD) or GPT-Image-1
+      (2025, better prompt adherence).
+    - **Speech / STT** → Whisper ($0.36/audio-hour); GPT-4o-Audio for
+      low-latency conversational voice.
+    - **Embeddings** → `text-embedding-3-small` ($0.02/M) for most RAG;
+      `text-embedding-3-large` only when retrieval-quality benchmarks
+      demand it.
+
+    Note the chosen model in `assumptions` with the detected use case +
+    why (e.g. "Detected use case: internal chatbot (HR Q&A); picked
+    GPT-4o-mini for cost-effective policy lookup")."""
 
 
 class PillarSimulation(BaseModel):

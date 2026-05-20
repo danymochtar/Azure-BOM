@@ -588,15 +588,46 @@ def _flatten_text(x: Any) -> str:
 
 
 def apply_ai_application_baselines(
-    mode: str, prefs: Dict[str, Any], *, wants_gpu: bool = False,
+    mode: str, prefs: Dict[str, Any], *,
+    wants_gpu: bool = False,
+    hints: Any = None,
 ) -> Dict[str, Any]:
+    """Seed AI-app baselines per use case + mode.
+
+    `hints`: text-shaped surfaces (signals, suggested_components,
+    filename, summary, doc body). Used to detect the use case
+    (chatbot internal vs customer-facing, RAG, code, reasoning,
+    summarisation, translation, vision, image-gen, speech, embeddings).
+    `wants_gpu`: triggers a GPU VM baseline when training / fine-tune
+    keywords are present.
+    """
+    from .pillars.ai_model_picker import recommend_ai_model, detect_ai_use_case
+
     mode = _resolve_mode(mode)
 
-    # OpenAI: seed GPT-4o-mini for saving, GPT-4o otherwise.
-    ou = prefs.get("openai_usage") or {}
-    if _is_empty(ou):
-        default_model = "gpt-4o-mini" if mode == "saving" else "gpt-4o"
-        prefs["openai_usage"] = {default_model: dict(_OPENAI_BY_MODE[mode])}
+    # Use-case-aware primary model. Always Azure OpenAI 1st-party
+    # unless `prefer_third_party` is set (the Sonnet auto-simulate
+    # path can override via suggested_inputs).
+    use_case = detect_ai_use_case(*(hints or []))
+    primary, fallback = recommend_ai_model(use_case, mode=mode)
+
+    # Seed openai_usage with the picker's primary model.
+    if _is_empty(prefs.get("openai_usage")):
+        prefs["openai_usage"] = {
+            primary.key: dict(_OPENAI_BY_MODE[mode])
+        }
+
+    # Stash the rationale + optional 3rd-party fallback so the
+    # assumption banner can show why this model was chosen.
+    prefs["__ai_model_rationale__"] = (
+        f"Use case detected: **{use_case}**. "
+        f"Primary model: **{primary.label}** ({primary.provider}). "
+        f"{primary.rationale}"
+    )
+    if fallback is not None:
+        prefs["__ai_model_fallback_note__"] = (
+            f"Consider Foundry alternative — {fallback.rationale}"
+        )
 
     if _is_empty(prefs.get("ai_search")):
         prefs["ai_search"] = dict(_AI_SEARCH_BY_MODE[mode])
@@ -630,7 +661,9 @@ def apply_baselines(
     mode = _resolve_mode(mode)
     if pillar == "ai_application":
         return apply_ai_application_baselines(
-            mode, prefs, wants_gpu=detect_gpu_workload(*hints),
+            mode, prefs,
+            wants_gpu=detect_gpu_workload(*hints),
+            hints=hints,
         )
     if pillar == "infra_modernization":
         return apply_infra_modernization_baselines(mode, prefs)
