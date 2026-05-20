@@ -642,12 +642,13 @@ LANDING_ZONE_COMPONENTS: List[LzComponent] = [
 # overrides win.
 # ---------------------------------------------------------------------------
 
-# Minimal "single web app" landing zone: just an ingress IP + App Gateway
-# (WAF v2). No firewall, no bastion, no Log Analytics. Useful for a
-# single-app cost line-up without the full hub-and-spoke scaffolding. CU
-# billing is auto-attached by the bill builder (it's a `derived` line).
+# Minimal "single web app" landing zone: ingress IP + App Gateway (WAF v2)
+# + VPN Gateway for hybrid connectivity from on-prem. No firewall, no
+# bastion, no Log Analytics. Useful for a single-app cost line-up that
+# still needs site-to-site VPN back to corporate. CU billing for the App
+# Gateway is auto-attached by the bill builder (it's a `derived` line).
 _LZ_BASIC = {
-    "public_ip", "app_gateway_waf",
+    "public_ip", "app_gateway_waf", "vpn_gw",
 }
 
 _LZ_FOUNDATION = {
