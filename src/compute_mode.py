@@ -1,5 +1,11 @@
 """Mode-aware baseline defaults for non-lift-shift pillars.
 
+Also hosts the Fabric Capacity Estimator port (see `recommend_fabric_capacity`)
+which mirrors Microsoft's official estimator at
+https://www.microsoft.com/en-us/microsoft-fabric/capacity-estimator
+using data-size + batch-frequency + workload-mix heuristics derived from
+MS Learn sizing guidance.
+
 When the user picks a global compute mode (`saving` / `normal` /
 `high_perf` from `constants.COMPUTE_MODES`), every pillar that exposes
 a tier / SKU selector should default to a tier that matches the mode —
@@ -21,7 +27,9 @@ Design:
 """
 from __future__ import annotations
 
-from typing import Any, Dict
+import math
+import re
+from typing import Any, Dict, List, Tuple
 
 from .constants import COMPUTE_MODES, DEFAULT_COMPUTE_MODE
 
@@ -204,6 +212,195 @@ def _detect_data_workload(*hints: Any) -> Dict[str, bool]:
     }
 
 
+# --- Fabric Capacity Estimator (port of MS official tool) ----------------
+#
+# Heuristics derived from the official Fabric Capacity Estimator at
+# https://www.microsoft.com/en-us/microsoft-fabric/capacity-estimator
+# and MS Learn sizing guidance. NOT a 1:1 numeric reproduction (the
+# official tool runs benchmark workloads under the hood) — instead a
+# defensible approximation good enough to seed a first-pass F-SKU when
+# the doc gives ANY of: data size, batch cycles, table count, workload
+# mix, PBI users. Missing inputs default to conservative values.
+#
+# Available F-SKUs (Microsoft's Fabric SKU ladder; pay-go pricing).
+_FABRIC_F_SKUS: Tuple[int, ...] = (2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048)
+
+# Fabric "workload" tokens — match against text hints to figure out which
+# workloads the user plans to enable. Each adds CU per the heuristic
+# below. Keep keys aligned with the official estimator's checkbox names.
+_FABRIC_WORKLOADS: Dict[str, Tuple[str, ...]] = {
+    "data_factory":      ("data factory", "adf", "pipeline", "dataflow", "etl ", " etl", "elt"),
+    # `spark_jobs` requires EXPLICIT Spark mention — "lakehouse" alone is
+    # the storage paradigm and may not imply Spark Jobs at all (Fabric
+    # Lakehouse can be queried via SQL endpoint without Spark).
+    "spark_jobs":        ("spark ", "pyspark", "spark notebook", "scala notebook"),
+    "data_warehouse":    ("data warehouse", "warehouse ", "dwh", "synapse warehouse", "dwu"),
+    "adhoc_sql":         ("adhoc sql", "ad-hoc sql", "ad hoc sql", "interactive query"),
+    "data_science":      ("data science", "ml ", "mlflow", "machine learning workspace"),
+    "power_bi":          ("power bi", "pbi", "dashboard", "report ", "bi solution"),
+    "power_bi_embedded": ("power bi embedded", "pbi embedded", "embedded analytics"),
+    "eventstream":       ("eventstream", "event stream", "event grid", "real-time stream"),
+    "eventhouse":        ("eventhouse", "kusto", "kql ", "real-time analytics"),
+    "activator":         ("activator", "reflex", "data activator"),
+    "sql_in_fabric":     ("sql database in fabric", "sql in fabric", "fabric sql"),
+}
+
+
+def _parse_data_size_gb(text: str) -> float | None:
+    """Extract a data-size mention in GB. Supports MB / GB / TB / PB.
+    Returns the FIRST size mentioned (closest to top of doc usually
+    reflects the headline figure)."""
+    # eg "10GB", "10 GB", "10 GiB", "1.5 TB", "2 petabytes"
+    pat = re.compile(
+        r"(\d+(?:[\.,]\d+)?)\s*(petabyte|terabyte|gigabyte|megabyte|pb|tb|gib|gb|mb)s?\b",
+        re.IGNORECASE,
+    )
+    multipliers = {
+        "mb": 1 / 1024, "megabyte": 1 / 1024,
+        "gb": 1.0, "gib": 1.0, "gigabyte": 1.0,
+        "tb": 1024.0, "terabyte": 1024.0,
+        "pb": 1024.0 * 1024, "petabyte": 1024.0 * 1024,
+    }
+    m = pat.search(text)
+    if not m:
+        return None
+    val = float(m.group(1).replace(",", "."))
+    return val * multipliers[m.group(2).lower()]
+
+
+def _parse_batches_per_day(text: str) -> int | None:
+    """Extract daily batch frequency. Recognises 'hourly', 'daily',
+    'X times per day', 'X batches', 'every X minutes', 'real-time'."""
+    low = text.lower()
+    if "real-time" in low or "realtime" in low or "real time" in low:
+        return 144  # treat as ~10-minute micro-batches → 144 batches / day
+    if "hourly" in low or "every hour" in low:
+        return 24
+    if "every 30 min" in low or "twice an hour" in low:
+        return 48
+    if "every 15 min" in low:
+        return 96
+    m = re.search(r"every\s+(\d+)\s*(min|minute)", low)
+    if m:
+        return max(1, 24 * 60 // int(m.group(1)))
+    m = re.search(r"(\d+)\s*(?:times|runs|cycles|batches)\s*(?:per|/)?\s*day", low)
+    if m:
+        return int(m.group(1))
+    if "daily" in low or "once a day" in low or "nightly" in low:
+        return 1
+    return None
+
+
+def _parse_table_count(text: str) -> int | None:
+    """Extract 'X tables' count."""
+    m = re.search(r"(\d+)\s*(?:to\s*\d+\s*)?tables?", text.lower())
+    if m:
+        return int(m.group(1))
+    # "2-3 tables" pattern
+    m = re.search(r"(\d+)\s*[-–]\s*(\d+)\s*tables?", text.lower())
+    if m:
+        return int(m.group(2))  # upper bound
+    return None
+
+
+def _parse_pbi_users(text: str) -> int | None:
+    """Extract Power BI user count from phrases like 'X users', 'X analysts',
+    'X concurrent users', 'serving X people'."""
+    low = text.lower()
+    patterns = [
+        r"(\d+)\s+(?:concurrent\s+)?(?:bi\s+)?users?",
+        r"(\d+)\s+(?:bi\s+)?(?:analysts?|consumers?|viewers?|readers?)",
+        r"serving\s+(\d+)",
+        r"(\d+)\s+power\s*bi\s+users?",
+        # "concurrent user load of X", "user load of X", "load of X users"
+        r"(?:concurrent\s+)?user\s+load\s+of\s+(\d+)",
+        r"load\s+of\s+(\d+)\s+(?:users?|people)",
+    ]
+    for p in patterns:
+        m = re.search(p, low)
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def _detect_fabric_workloads(text: str) -> List[str]:
+    low = text.lower()
+    return [
+        wl for wl, kws in _FABRIC_WORKLOADS.items()
+        if any(k in low for k in kws)
+    ]
+
+
+def recommend_fabric_capacity(
+    data_gb_compressed: float = 100.0,
+    daily_batches: int = 1,
+    num_tables: int = 10,
+    workloads: List[str] | None = None,
+    pbi_users: int = 25,
+) -> Tuple[float, str, str]:
+    """Return (estimated_cu, recommended_sku, rationale).
+
+    Heuristic mirrors MS Fabric Capacity Estimator outputs:
+      - Ingestion CU = 1 + log10(data_gb) × 2, scaled by daily_batches/4
+      - Storage CU   = num_tables × 0.05 (concurrent metadata ops)
+      - Workload CU adders per the official checkbox list
+      - PBI user CU  = pbi_users × 0.05 (typical concurrent rendering)
+      - Floor 2 CU (F2 minimum to deploy Fabric)
+      - Round UP to nearest F-SKU rung
+    """
+    wl_set = set(workloads or [])
+    cu_breakdown: List[str] = []
+
+    # Ingestion / processing — driven by daily volume (GB/day), not
+    # by batch count separately. 2 CU per decade of GB/day matches the
+    # official estimator's "Data Factory pipeline" CU output for typical
+    # CSV/Parquet ingestion. Examples:
+    #   10  GB/day → 2 CU,  100 GB/day → 4 CU,  1 TB/day → 6 CU,
+    #   10 TB/day → 8 CU, 100 TB/day → 10 CU,  1 PB/day → 12 CU
+    data_per_day = max(1.0, data_gb_compressed * daily_batches)
+    ingest = math.log10(data_per_day) * 2.0
+    cu_breakdown.append(
+        f"ingest({data_gb_compressed:.0f} GB × {daily_batches}/d = "
+        f"{data_per_day:.0f} GB/day) = {ingest:.1f}"
+    )
+
+    storage = num_tables * 0.05
+    cu_breakdown.append(f"tables({num_tables}) = {storage:.1f}")
+
+    total = ingest + storage
+
+    # Workload adders (per the official estimator's checkbox UI). Spark
+    # is sized at 1 CU per 500 GB (not per 100 GB) — Spark is bursty so
+    # the always-on CU budget should reflect typical 20% utilisation,
+    # not 100%. Reservers tune upward via the F-SKU widget if their
+    # Spark jobs are continuous.
+    adders = {
+        "data_factory":      max(1.0, daily_batches * 0.25),     # orchestration
+        "spark_jobs":        max(4.0, data_gb_compressed / 500), # bursty, 20% avg
+        "data_warehouse":    max(2.0, num_tables * 0.1),
+        "adhoc_sql":         2.0,
+        "data_science":      4.0,
+        "power_bi":          max(2.0, pbi_users * 0.05),
+        "power_bi_embedded": 4.0,
+        "eventstream":       2.0,
+        "eventhouse":        4.0,                                 # KQL DB sustained
+        "activator":         1.0,
+        "sql_in_fabric":     4.0,
+    }
+    for wl, cu in adders.items():
+        if wl in wl_set:
+            total += cu
+            cu_breakdown.append(f"{wl} = {cu:.1f}")
+
+    total = max(2.0, total)
+    chosen = next((s for s in _FABRIC_F_SKUS if s >= total), _FABRIC_F_SKUS[-1])
+    rationale = (
+        f"Fabric Capacity Estimator: {' + '.join(cu_breakdown)} = "
+        f"~{total:.1f} CU → F{chosen}"
+    )
+    return total, f"F{chosen}", rationale
+
+
 def apply_data_platform_baselines(
     mode: str, prefs: Dict[str, Any], *hints: Any,
 ) -> Dict[str, Any]:
@@ -241,16 +438,51 @@ def apply_data_platform_baselines(
     """
     mode = _resolve_mode(mode)
     pat = _detect_data_workload(*hints)
+    blob = " ".join(_flatten_text(h) for h in hints)
 
     seeded_analytics = False
     if pat["analytics"] or not (pat["oltp"] or pat["sql_migration"] or pat["pg"] or pat["mysql"] or pat["cosmos"] or pat["cache"]):
-        # Analytics path (or fall-through default when no signal)
+        # Analytics path (or fall-through default when no signal).
+        # Use the Fabric Capacity Estimator port to size the F-SKU from
+        # whatever the doc gave us — falls back to conservative defaults
+        # field-by-field where the doc is silent. Defaults are biased
+        # SMALL so a "POC limited to 2-3 tables" doc doesn't get sized
+        # at production scale just because the global mode is "normal".
+        # Reviewers tune upward in the widget.
+        data_gb = _parse_data_size_gb(blob) or {"saving": 10.0, "normal": 100.0, "high_perf": 1000.0}[mode]
+        batches = _parse_batches_per_day(blob) or 1
+        tables  = _parse_table_count(blob) or {"saving": 5, "normal": 10, "high_perf": 50}[mode]
+        pbi     = _parse_pbi_users(blob) or _PBI_USERS_BY_MODE[mode]
+        wls     = _detect_fabric_workloads(blob)
+        if not wls:
+            # No explicit workload mention — assume the minimal pair
+            # (Data Factory + Power BI) so the F-SKU isn't estimated
+            # assuming a bare lakehouse.
+            wls = ["data_factory", "power_bi"]
+
+        cu, sku, rationale = recommend_fabric_capacity(
+            data_gb_compressed=data_gb,
+            daily_batches=batches,
+            num_tables=tables,
+            workloads=wls,
+            pbi_users=pbi,
+        )
+
         if _is_empty(prefs.get("fabric_sku")):
-            prefs["fabric_sku"] = _FABRIC_BY_MODE[mode]
+            prefs["fabric_sku"] = sku
         if _is_empty(prefs.get("pbi_users")):
-            prefs["pbi_users"] = _PBI_USERS_BY_MODE[mode]
+            prefs["pbi_users"] = pbi
         if _is_empty(prefs.get("adls_gen2")):
-            prefs["adls_gen2"] = dict(_ADLS_BY_MODE[mode])
+            # Size ADLS off the actual data figure (or mode default).
+            prefs["adls_gen2"] = {
+                "tier": "hot",
+                "redundancy": "GRS" if mode == "high_perf" else "LRS",
+                "storage_gb": max(int(data_gb), _ADLS_BY_MODE[mode]["storage_gb"]),
+            }
+        # Stash the rationale so the user can inspect why this F-SKU
+        # came up (rendered in the data_platform expander or
+        # Cost Assumptions sheet).
+        prefs["__fabric_estimator_rationale__"] = rationale
         seeded_analytics = True
 
     if pat["sql_migration"] and _is_empty(prefs.get("azure_sql_db")):
