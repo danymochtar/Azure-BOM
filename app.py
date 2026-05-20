@@ -89,6 +89,32 @@ st.caption(
 _prefs = storage.load_prefs()
 _saved_api_key = storage.load_api_key()
 
+# ---------------- Fresh-session reset ----------------
+# A browser refresh / hard reload zeroes `st.session_state` by default,
+# but the LAST-BOM + per-pillar derived caches sitting in localStorage
+# would otherwise resurface as a "Restore last assessment" offer +
+# stale assumption banners — confusing when the reviewer just wanted a
+# clean slate. On every fresh session we:
+#   • drop the saved BOM from localStorage
+#   • clear any sim cache keys that might still be in session_state
+# Region / currency / app-name / API key / billing-term prefs are
+# preserved because those are explicit user settings, not derived
+# state from a previous assessment.
+if "_session_fresh_init" not in st.session_state:
+    try:
+        storage.clear_last_bom()
+    except Exception:
+        pass
+    for _k in list(st.session_state):
+        if (
+            _k.startswith("_sim::")
+            or _k.startswith("_auto_gen::")
+            or _k.startswith("_assumption_log")
+            or _k in ("bom_lines", "mapping_rows", "_pillar_totals", "_submitted_uploads")
+        ):
+            st.session_state.pop(_k, None)
+    st.session_state["_session_fresh_init"] = True
+
 # ---------------- Sidebar: configuration + AI key ----------------
 # Grouped into three expanders so the sidebar fits one screen.
 with st.sidebar:
