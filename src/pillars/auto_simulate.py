@@ -33,6 +33,20 @@ from .ai_application import AZURE_FOUNDRY_MODELS, AZURE_OPENAI_MODELS, COGNITIVE
 
 MODEL = "claude-sonnet-4-6"
 
+# Auto-simulate doesn't need every row of an RVTools-sized export — it only
+# needs to understand the SHAPE of the workload (counts, sample rows,
+# headers, narrative). Cap the spreadsheet preview at this many rows per
+# sheet so the prompt stays well under the 1M-token model limit.
+# Full-fidelity VM extraction happens in `ai_inventory.py`, not here.
+AUTO_SIM_SPREADSHEET_ROWS = 200
+
+# Safety cap on the total character count of text content blocks fed to
+# the model. A char-to-token ratio of ~3.5 means 700K chars ≈ 200K tokens,
+# leaving room for the system prompt, schema, response, and any binary
+# (PDF/image) content blocks. Truncated content gets a clear marker so
+# the model knows what's missing.
+AUTO_SIM_TEXT_CHAR_BUDGET = 700_000
+
 
 PILLAR_SCHEMAS: Dict[str, str] = {
     "ai_application": """Schema for ai_application.suggested_inputs:
@@ -219,7 +233,39 @@ def simulate(
     if pillar not in PILLAR_SCHEMAS:
         raise ValueError(f"Unsupported pillar for simulate: {pillar}")
 
-    uc = _prepare_content(data, filename, spreadsheet_preview_rows=None)
+    # Use sampled rows (not the full sheet) — a 5000-row RVTools export
+    # otherwise blows the 1M-token model limit even before we add the
+    # schema + system prompt. Sampling is fine here because auto-simulate
+    # only infers shape; full extraction is done separately.
+    uc = _prepare_content(
+        data, filename, spreadsheet_preview_rows=AUTO_SIM_SPREADSHEET_ROWS
+    )
+
+    # Defensive truncation for narrative / text content (DOCX, plain text,
+    # large CSV/Excel previews). PDFs and images bypass this because they
+    # ride as binary `document` / `image` blocks; for those, the model's
+    # own tokenizer applies and we let the API surface the error if it's
+    # still too big.
+    safe_blocks = []
+    text_budget = AUTO_SIM_TEXT_CHAR_BUDGET
+    for blk in uc.content_blocks:
+        if isinstance(blk, dict) and blk.get("type") == "text":
+            txt = blk.get("text", "") or ""
+            if len(txt) > text_budget:
+                head = txt[: text_budget // 2]
+                tail = txt[-text_budget // 2 :]
+                txt = (
+                    f"{head}\n\n"
+                    f"… [TRUNCATED — {len(blk['text']) - text_budget:,} characters omitted "
+                    f"to fit the auto-simulate context budget; sampling head + tail] …\n\n"
+                    f"{tail}"
+                )
+                text_budget = 0
+            else:
+                text_budget -= len(txt)
+            safe_blocks.append({"type": "text", "text": txt})
+        else:
+            safe_blocks.append(blk)
 
     instruction_parts = [
         f"File: {filename}",
@@ -242,20 +288,52 @@ def simulate(
         "cost by >30%."
     )
 
-    user_content = list(uc.content_blocks) + [
+    user_content = safe_blocks + [
         {"type": "text", "text": "\n".join(instruction_parts)}
     ]
 
     client = anthropic.Anthropic(api_key=api_key, max_retries=4)
-    response = client.messages.parse(
-        model=MODEL,
-        max_tokens=8000,
-        system=[
-            {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
-        ],
-        messages=[{"role": "user", "content": user_content}],
-        output_format=PillarSimulation,
-    )
+    try:
+        response = client.messages.parse(
+            model=MODEL,
+            max_tokens=8000,
+            system=[
+                {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
+            ],
+            messages=[{"role": "user", "content": user_content}],
+            output_format=PillarSimulation,
+        )
+    except anthropic.BadRequestError as e:
+        # Second-pass shrink: if the binary content blocks (PDF/image) +
+        # already-truncated text still exceed the model's context window,
+        # send ONLY the text_summary + schema. The user loses doc detail
+        # but still gets a structurally-valid simulation instead of a
+        # hard fallback to defaults.
+        msg = str(e)
+        if "prompt is too long" not in msg.lower():
+            raise
+        fallback_content = [
+            {
+                "type": "text",
+                "text": (
+                    f"[Note: the original upload was too large for the "
+                    f"auto-simulate context window. Working from the "
+                    f"summary only — please rely on user-supplied "
+                    f"`prior_answers` and clearly stated assumptions.]\n\n"
+                    f"File: {filename}\nSummary: {uc.text_summary}\n\n"
+                    + "\n".join(instruction_parts)
+                ),
+            }
+        ]
+        response = client.messages.parse(
+            model=MODEL,
+            max_tokens=8000,
+            system=[
+                {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
+            ],
+            messages=[{"role": "user", "content": fallback_content}],
+            output_format=PillarSimulation,
+        )
     usage_tracker.record(f"Auto-simulate ({pillar})", MODEL, getattr(response, "usage", None))
     sim = response.parsed_output
     sim.pillar = pillar  # defensive
