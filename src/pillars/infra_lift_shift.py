@@ -373,6 +373,11 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
                     "ExpressRoute, Entra Domain Services, geo-ACR, WAF, VPN)."
                 ),
             )
+            # Stash preset in session_state so later pillars (especially
+            # azure_security's CAF-aware Defender baseline) can read the
+            # live picked tier in the same render cycle without waiting
+            # for the next Generate-and-save round-trip.
+            st.session_state["lz_preset"] = preset_choice
 
             # Detect a preset switch and re-seed the checkbox session state.
             # `_lz_last_preset` persists across reruns so we only seed when

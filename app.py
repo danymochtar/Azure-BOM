@@ -907,6 +907,9 @@ for pk in active_pillars:
         _ai_fallback = merged_prefs.pop("__ai_model_fallback_note__", "")
         if _ai_fallback:
             _alog[pk].append(_ai_fallback)
+        _defender_rationale = merged_prefs.pop("__defender_rationale__", "")
+        if _defender_rationale:
+            _alog[pk].append(_defender_rationale)
         if effective_mode != compute_mode:
             _alog[pk].append(
                 f"Compute mode override: this pillar uses **{effective_mode}** "

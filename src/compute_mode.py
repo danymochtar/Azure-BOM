@@ -669,4 +669,112 @@ def apply_baselines(
         return apply_infra_modernization_baselines(mode, prefs)
     if pillar == "data_platform":
         return apply_data_platform_baselines(mode, prefs, *hints)
+    if pillar == "azure_security":
+        return apply_azure_security_baselines(mode, prefs, *hints)
+    return prefs
+
+
+# --- azure_security: Defender for Cloud baselines per CAF tier + workload --
+#
+# Microsoft's Defender for Cloud has TWO orthogonal layers:
+#   1. CSPM (posture management):
+#      - Foundational CSPM    — free, ON by default
+#      - Defender CSPM        — paid (~$5/server/mo + ~$0.02/billable resource)
+#   2. CWP (Cloud Workload Protection) plans — paid per resource type.
+#
+# CAF Cloud Adoption Framework guidance
+# (/azure/cloud-adoption-framework/secure/) maps each landing-zone tier
+# to a recommended Defender baseline:
+#
+#   Basic LZ       → Foundational CSPM + Defender Servers P2 (for any VM)
+#   Foundation LZ  → + Defender Storage, Defender Key Vault
+#   Standard LZ    → + Defender CSPM, Defender for Resource Manager + DNS,
+#                    Defender SQL on VMs (if SQL present),
+#                    Defender App Service (if App Service present),
+#                    Sentinel (Pay-as-you-go ingestion)
+#   Enterprise LZ  → + Defender Containers (if AKS),
+#                    Defender for APIs, Defender Cosmos DB (if Cosmos),
+#                    Defender for OSS RDBMS (if PG/MySQL),
+#                    Defender for AI workloads (if Azure OpenAI / Foundry)
+#
+# Per-workload triggers (added on top of the tier baseline regardless of
+# LZ preset):
+#   sql / mssql in hints      → defender_sql_on_vms
+#   aks / kubernetes / k8s    → defender_containers
+#   app service / app-service → defender_appsvc
+#   cosmos                    → defender_cosmos (if catalog has it)
+#   postgres / mysql / maria  → defender_oss_db
+#   openai / foundry / gpt    → defender_ai
+#   purview / data catalog    → purview component
+#   privileged identity / pim → pim component
+
+_LZ_PRESET_SECURITY_BASELINE: Dict[str, List[str]] = {
+    "Basic":      ["cspm", "servers_p2"],
+    "Foundation": ["cspm", "servers_p2", "storage", "keyvault"],
+    "Standard":   ["cspm", "servers_p2", "storage", "keyvault", "sentinel"],
+    "Enterprise": ["cspm", "servers_p2", "storage", "keyvault", "sentinel",
+                   "private_link", "pim"],
+}
+
+_SECURITY_WORKLOAD_TRIGGERS: List[Tuple[str, Tuple[str, ...]]] = [
+    ("sql_on_vms", ("sql server", "mssql", "sql on vm", "sql-server", "-sql-")),
+    ("containers", ("aks", "kubernetes", "k8s", "container apps", "containers")),
+    ("appsvc",     ("app service", "app-service", "appsvc", "premium v3", "p1v3", "p2v3", "p3v3")),
+    ("waf",        ("waf", "web application firewall", "app gateway")),
+    ("purview",    ("purview", "data catalog", "lineage", "data classification")),
+    ("pim",        ("pim ", "privileged identity", "just-in-time", " jit ", "eligible role")),
+]
+
+
+def apply_azure_security_baselines(
+    mode: str, prefs: Dict[str, Any], *hints: Any,
+) -> Dict[str, Any]:
+    """Seed the security pillar's `enabled` list from the LZ preset +
+    workload patterns. The tier baseline matches Microsoft's CAF
+    "Secure" methodology; workload triggers add specific Defender
+    plans when the upload mentions the resource type.
+
+    Reads `prefs.get("lz_preset")` for the tier (the lift-shift pillar
+    seeds this even when no LZ checkbox is ticked). Falls through to
+    "Foundation" baseline if no preset is set.
+    """
+    mode = _resolve_mode(mode)
+    blob = " ".join(_flatten_text(h) for h in hints).lower()
+    # Resolve preset in priority order: explicit prefs key (saved
+    # state) → session_state live pick (current render cycle) →
+    # Foundation default.
+    preset = prefs.get("lz_preset")
+    if not preset:
+        try:
+            import streamlit as _st
+            preset = _st.session_state.get("lz_preset")
+        except Exception:
+            preset = None
+    preset = preset or "Foundation"
+    enabled: List[str] = list(prefs.get("enabled") or [])
+
+    # Tier baseline — only add components that aren't already in the
+    # user's enabled list so manual picks survive.
+    tier_baseline = _LZ_PRESET_SECURITY_BASELINE.get(preset, _LZ_PRESET_SECURITY_BASELINE["Foundation"])
+    rationale_parts = [f"LZ preset `{preset}` → Defender baseline: {tier_baseline}."]
+
+    for c in tier_baseline:
+        if c not in enabled:
+            enabled.append(c)
+
+    # Workload triggers on top.
+    workload_added: List[str] = []
+    for comp_key, tokens in _SECURITY_WORKLOAD_TRIGGERS:
+        if comp_key in enabled:
+            continue
+        if any(t in blob for t in tokens):
+            enabled.append(comp_key)
+            workload_added.append(comp_key)
+    if workload_added:
+        rationale_parts.append(
+            f"Workload triggers detected → added: {workload_added}."
+        )
+
+    prefs["enabled"] = enabled
+    prefs["__defender_rationale__"] = " ".join(rationale_parts)
     return prefs
