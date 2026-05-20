@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Dict, List, Tuple
 
 from ..models import BomLine, InventoryItem
-from ..mapper import recommend_vm, recommend_disk
+from ..mapper import recommend_vm, recommend_disk, recommend_disk_tier
 from ..mapper.sizer import os_is_windows
 from ..mapper.vm_catalog import VM_CATALOG, VmSku
 from ..pricing.retail import RetailPricesClient, HOURS_PER_MONTH
@@ -96,12 +96,13 @@ def build_compute_bom(
     client: RetailPricesClient,
     region: str,
     headroom: float = 1.0,
-    disk_tier: str = "Premium SSD",
+    disk_tier: str = "Standard SSD",
     os_override: str = "as-detected",
     app_name: str = "",
     pricing_mode: str = "payg",
     use_ahb: bool = False,
     compute_mode: str = "normal",
+    auto_disk_tier: bool = True,
 ) -> Tuple[List[BomLine], List[dict]]:
     """Return (bom lines, mapping_rows) where mapping_rows is a per-VM record
     showing source specs -> target Azure SKUs for UI display.
@@ -125,7 +126,17 @@ def build_compute_bom(
         vm_groups[key]["count"] += 1
         vm_groups[key]["names"].append(item.name)
 
-        disk = recommend_disk(item.storage_gb, tier=disk_tier) if item.storage_gb > 0 else None
+        # Per-VM disk-tier auto-recommendation. DB / SQL / Oracle /
+        # Mongo / etc. → Premium SSD; backup / archive / file / log →
+        # Standard HDD; everything else inherits the global default
+        # (`disk_tier`). When `auto_disk_tier=False` every disk uses
+        # the global default — matches the legacy "single tier for
+        # everything" behaviour.
+        item_tier = (
+            recommend_disk_tier(item, default=disk_tier)
+            if auto_disk_tier else disk_tier
+        )
+        disk = recommend_disk(item.storage_gb, tier=item_tier) if item.storage_gb > 0 else None
         if disk:
             disk_groups.setdefault(disk.sku, {"disk": disk, "count": 0})
             disk_groups[disk.sku]["count"] += 1

@@ -171,5 +171,68 @@ def recommend_disk(size_gb: float, tier: str = "Premium SSD") -> DiskRec:
     return DiskRec(sku=sku, tier=tier, size_gib=cap, meter_name=f"{sku} LRS Disk")
 
 
+# Per-VM disk-tier auto-recommendation. Driven by VM name / role hints
+# because RVTools exports almost never carry IOPS data — we have to
+# infer the workload class from naming conventions instead. Logic mirrors
+# Microsoft Learn's "Choose a disk type" guidance:
+#   https://learn.microsoft.com/en-us/azure/virtual-machines/disks-types
+#
+#   Premium SSD   — production DB, OLTP, low-latency apps (SQL/Oracle/
+#                   PostgreSQL/MongoDB), SAP HANA, message brokers
+#   Standard SSD  — production web/app servers, batch jobs, dev/test
+#                   with consistent reliability needs (the modern
+#                   default — Azure's recommended baseline)
+#   Standard HDD  — backup, archive, file shares with infrequent
+#                   access, dev/test cost-sensitive, legacy file
+#                   servers, log retention
+#
+# Substring lists are case-insensitive and matched against the VM name
+# AND (where present) the OS / notes fields. First hit wins per the
+# priority order DB → HDD → SSD-default.
+
+_DB_TOKENS: tuple = (
+    "sql", "mssql", "oracle", "ora-db", "ora db", "postgres", "pg-",
+    "mysql", "mariadb", "mongo", "cassandra", "redis", "memcache",
+    "elastic", "splunk", "kafka", "rabbitmq", "activemq",
+    "saphana", "sap-hana", "hana ", "sap db",
+    "-db-", "_db_", "-dbs-", "database", "rdbms", "oltp",
+)
+
+_HDD_TOKENS: tuple = (
+    "backup", "archive", "snapshot", "snap-",
+    "file ", "fileserver", "file-server", "nas-", "smb ",
+    "ftp", "sftp", "tftp",
+    "log-", "_log_", "syslog", "logs ", "log archive",
+    "media ", "video ", "image archive", "blob ",
+    "tape ", "cold ", "infrequent",
+)
+
+
+def recommend_disk_tier(item: "InventoryItem", default: str = "Standard SSD") -> str:
+    """Pick the right disk tier for ONE VM based on naming hints.
+
+    Decision order (first hit wins):
+      1. DB / OLTP / low-latency tokens in name → Premium SSD
+      2. Backup / archive / file / log tokens   → Standard HDD
+      3. Everything else                        → `default` (Standard
+         SSD per Microsoft's 2025 recommended baseline; callers can
+         override to Premium for an all-prod fleet or HDD for an
+         all-dev fleet).
+
+    Returns the tier string (matches TIER_PREFIX keys).
+    """
+    haystacks = " ".join([
+        (item.name or "").lower(),
+        (item.os or "").lower(),
+        (item.notes or "").lower(),
+    ])
+
+    if any(tok in haystacks for tok in _DB_TOKENS):
+        return "Premium SSD"
+    if any(tok in haystacks for tok in _HDD_TOKENS):
+        return "Standard HDD"
+    return default
+
+
 def os_is_windows(os_str: str) -> bool:
     return "win" in (os_str or "").lower()

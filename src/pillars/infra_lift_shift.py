@@ -91,10 +91,43 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
                 help="1.1 = +10% padding; 1.3 = +30%; etc.",
             )
         disk_opts = ["Premium SSD", "Standard SSD", "Standard HDD"]
-        saved_disk = prefs.get("disk_tier", "Premium SSD")
+        # Default flipped from Premium SSD → Standard SSD to match
+        # Microsoft Learn's 2025 baseline ("Standard SSD is the
+        # recommended starting tier for most VM workloads"). DB / OLTP
+        # VMs auto-promote to Premium SSD; backup / archive / log
+        # VMs auto-demote to Standard HDD via `recommend_disk_tier`.
+        saved_disk = prefs.get("disk_tier", "Standard SSD")
         disk_tier = st.selectbox(
-            "Default disk tier", disk_opts,
-            index=disk_opts.index(saved_disk) if saved_disk in disk_opts else 0,
+            "Default disk tier (fallback when name doesn't hint at workload)",
+            disk_opts,
+            index=disk_opts.index(saved_disk) if saved_disk in disk_opts else 1,
+            help=(
+                "Microsoft Learn disk-tier guidance:\n\n"
+                "  • **Premium SSD** — production DB, OLTP, low-latency "
+                "apps (SQL/Oracle/Postgres/MongoDB), SAP HANA. Auto-"
+                "picked for VMs whose name contains DB tokens.\n"
+                "  • **Standard SSD** — recommended baseline for web "
+                "/ app servers, batch, dev / test with reliability "
+                "needs. Default when no workload hint is detectable.\n"
+                "  • **Standard HDD** — backup, archive, file shares "
+                "with infrequent access, log retention. Auto-picked "
+                "for VMs whose name contains backup/archive/file/log "
+                "tokens.\n\n"
+                "Per-VM auto-routing can be disabled below if you want "
+                "every disk on the same tier."
+            ),
+        )
+        auto_disk_tier = st.checkbox(
+            "🤖 Auto-route disk tier per VM (DB→Premium, archive→HDD)",
+            value=bool(prefs.get("auto_disk_tier", True)),
+            help=(
+                "When on, VMs are routed to a tier based on naming "
+                "hints — DB / OLTP names go to Premium SSD; backup / "
+                "archive / file / log names go to Standard HDD; "
+                "everything else uses the default tier above. Turn off "
+                "to force every disk onto the default tier (legacy "
+                "behaviour)."
+            ),
         )
     with c2:
         os_opts = ["as-detected", "Linux", "Windows"]
@@ -549,6 +582,7 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
         "items": items, "mode": mode, "spec": spec,
         "strategy_key": strategy_key, "headroom": headroom,
         "disk_tier": disk_tier, "os_mode": os_mode,
+        "auto_disk_tier": auto_disk_tier,
         "include_off": include_off,
         "include_lz": include_lz,
         "include_ha": include_ha,
@@ -584,7 +618,8 @@ def build_bom(client, region: str, inputs: dict, app_name: str, pricing_mode: st
     compute_lines, mapping_rows = build_compute_bom(
         items=items, client=client, region=region,
         headroom=inputs.get("headroom", 1.0),
-        disk_tier=inputs.get("disk_tier", "Premium SSD"),
+        disk_tier=inputs.get("disk_tier", "Standard SSD"),
+        auto_disk_tier=bool(inputs.get("auto_disk_tier", True)),
         os_override=inputs.get("os_mode", "as-detected"),
         app_name=app_name, pricing_mode=pricing_mode,
         use_ahb=bool(inputs.get("__use_ahb__", False)),
