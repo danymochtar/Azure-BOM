@@ -31,7 +31,38 @@ def _memory_to_cpu_ratio(item: InventoryItem) -> float:
     return (item.memory_gb / item.vcpu) if item.vcpu else 0.0
 
 
-def recommend_vm(item: InventoryItem, headroom: float = 1.0, prefer_burstable_cpu: int = 2) -> VmSku:
+# Substrings (case-insensitive) we treat as "non-production" when looking
+# at an inventory item's environment field or VM name. RVTools, Azure
+# Migrate and ad-hoc spec sheets all use slightly different conventions —
+# this covers the common ones plus the abbreviations seen in real exports.
+NON_PROD_TOKENS: tuple = (
+    "uat", "test", "dev", "stage", "stg", "staging", "sit",
+    "qa", "preprod", "pre-prod", "nonprod", "non-prod",
+    "sandbox", "training",
+)
+
+
+def is_non_prod(item: InventoryItem) -> bool:
+    """True if the item looks like a non-production workload — checks the
+    explicit environment tag first, then falls back to substring matching
+    on the VM name (e.g. 'erp-uat-app1' or 'Server 3 — UAT Application
+    Server'). Conservative: anything ambiguous returns False so we don't
+    accidentally throttle a real prod VM by sticking it on Burstable."""
+    haystacks = (item.environment or "", item.name or "")
+    for h in haystacks:
+        low = h.lower()
+        for tok in NON_PROD_TOKENS:
+            if tok in low:
+                return True
+    return False
+
+
+def recommend_vm(
+    item: InventoryItem,
+    headroom: float = 1.0,
+    prefer_burstable_cpu: int = 2,
+    cost_saving_mode: bool = False,
+) -> VmSku:
     """Right-size an on-prem VM to the closest Azure SKU.
 
     Sizing policy:
@@ -41,30 +72,35 @@ def recommend_vm(item: InventoryItem, headroom: float = 1.0, prefer_burstable_cp
          exports (e.g. 4 vCPU / 16 GB → D4s v5).
       2. **Nearest cost-optimized fit.** If no exact match exists, return
          the SMALLEST SKU whose capacity still covers the source spec
-         (vCPU >= item.vcpu AND memory_gb >= item.memory_gb). Picking the
-         smallest fitting SKU minimises cost while ensuring the workload
-         fits — the "nearest" in both size and price.
+         (vCPU >= item.vcpu AND memory_gb >= item.memory_gb).
 
     `headroom` defaults to 1.0 (1:1 sizing). Callers who deliberately want
-    a safety margin may pass 1.1 / 1.2 / etc. — the raw spec is multiplied
-    before the fit search. When headroom > 1.0, the exact-match fast path
-    is skipped (an exact match of the RAW spec isn't the user's intent
-    when they've asked for padding).
+    a safety margin may pass 1.1 / 1.2 / etc.
 
-    Family preference:
-      - Burstable B-series only for small (<=prefer_burstable_cpu vCPU)
-        low-memory workloads.
-      - Memory-optimized E-series when memory-to-CPU ratio >= 6.
-      - General D-series otherwise.
+    `cost_saving_mode`: when True AND the item is non-prod (per
+    `is_non_prod()`), Burstable B-series is preferred for any size up
+    to B20ms (20 vCPU / 80 GB) — typical ~30-40% saving on the per-hour
+    rate. Memory-heavy workloads (ratio ≥ 6) still go to E-series since
+    B-series caps at 4 GB/vCPU. Prod VMs stay on D/E.
+
+    Without cost_saving_mode, Burstable is only chosen for tiny workloads
+    (≤ prefer_burstable_cpu vCPU and ≤ 32 GB memory) regardless of env.
     """
     ratio = _memory_to_cpu_ratio(item)
+    non_prod = cost_saving_mode and is_non_prod(item)
 
     def family_score(sku: VmSku) -> int:
         if sku.family == "burstable":
+            if non_prod:
+                # Memory-heavy non-prod still routes to E-series since
+                # B-series caps at 4 GB per vCPU. For everything else,
+                # B-series is the preferred family.
+                return 0 if ratio < 6 else 3
             return 0 if item.vcpu <= prefer_burstable_cpu and item.memory_gb <= 32 else 3
         if sku.family == "memory":
             return 0 if ratio >= 6 else 2
-        return 1  # general
+        # general (D-series): de-prioritise vs Burstable when non_prod + cost_saving
+        return 2 if non_prod else 1
 
     # --- 1:1 exact match (only when no deliberate headroom padding) ---
     if abs(headroom - 1.0) < 1e-9:

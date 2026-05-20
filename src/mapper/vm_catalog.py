@@ -25,13 +25,23 @@ class VmSku:
     priority: int = 10     # lower = preferred for tie-break
 
 
-# Burstable (best fit for small, low-utilization workloads)
+# Burstable (CPU-credit-based; ~30-40% cheaper than D-series at the same
+# vCPU/memory point — ideal for non-prod, dev/test/UAT/staging/SIT, and
+# any workload that averages <30% CPU utilization). B-series accumulates
+# CPU credits when idle and consumes them when busy; sustained high-CPU
+# workloads will throttle once credits are exhausted, so for production
+# stick to D-/E-series unless the customer explicitly wants the cheaper
+# tier and accepts the throttling tradeoff.
 BURSTABLE: List[VmSku] = [
+    VmSku("Standard_B1s",      "B1s",      "burstable", 1,  1,   "B1s",      priority=5),
+    VmSku("Standard_B1ms",     "B1ms",     "burstable", 1,  2,   "B1ms",     priority=5),
     VmSku("Standard_B2s",      "B2s",      "burstable", 2,  4,   "B2s",      priority=5),
     VmSku("Standard_B2ms",     "B2ms",     "burstable", 2,  8,   "B2ms",     priority=5),
     VmSku("Standard_B4ms",     "B4ms",     "burstable", 4,  16,  "B4ms",     priority=5),
     VmSku("Standard_B8ms",     "B8ms",     "burstable", 8,  32,  "B8ms",     priority=5),
+    VmSku("Standard_B12ms",    "B12ms",    "burstable", 12, 48,  "B12ms",    priority=5),
     VmSku("Standard_B16ms",    "B16ms",    "burstable", 16, 64,  "B16ms",    priority=5),
+    VmSku("Standard_B20ms",    "B20ms",    "burstable", 20, 80,  "B20ms",    priority=5),
 ]
 
 # General-purpose Dsv5 (premium SSD capable)

@@ -834,6 +834,7 @@ if _btn_clicked or _should_auto_generate:
             "include_lz": ls_in.get("include_lz", True),
             "include_ha": ls_in.get("include_ha", False),
             "include_bcdr": ls_in.get("include_bcdr", False),
+            "cost_saving_mode": ls_in.get("cost_saving_mode", False),
             "lz_selected": ls_in.get("lz_selected", []),
             "lz_preset": ls_in.get("lz_preset", "Standard"),
             "sec_enabled": sec_in.get("enabled", []),

@@ -108,6 +108,26 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
         include_lz = st.checkbox("Landing Zone", value=bool(prefs.get("include_lz", True)))
         include_ha = st.checkbox("High Availability", value=bool(prefs.get("include_ha", False)))
         include_bcdr = st.checkbox("BCDR", value=bool(prefs.get("include_bcdr", False)))
+        # Auto-route non-prod (UAT / dev / test / staging / SIT / QA /
+        # preprod) to Burstable B-series for ~30-40% savings. Prod stays
+        # on D/E-series. Detection uses the VM's `environment` field and
+        # name substring — anything ambiguous defaults to prod (no
+        # accidental throttling of a real prod workload).
+        cost_saving_mode = st.checkbox(
+            "💰 Cost-saving: non-prod → Burstable (B-series)",
+            value=bool(prefs.get("cost_saving_mode", False)),
+            help=(
+                "When on, VMs flagged as non-production (UAT, dev, test, "
+                "staging, SIT, QA, preprod, sandbox, training — matched on "
+                "`environment` tag or name substring) are sized on the "
+                "Burstable B-series instead of D/E. B-series accumulates "
+                "CPU credits when idle and bursts to full speed when busy "
+                "— typical 30-40% savings on the per-hour rate. Sustained "
+                "high-CPU workloads will throttle once credits run out; "
+                "leave OFF for prod-only inventories or workloads with "
+                "average CPU > 30%."
+            ),
+        )
 
     # Secondary region (only when HA or BCDR). Default to the Azure-
     # recommended paired region for the primary so the user doesn't have
@@ -479,6 +499,7 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
         "include_lz": include_lz,
         "include_ha": include_ha,
         "include_bcdr": include_bcdr,
+        "cost_saving_mode": cost_saving_mode,
         "secondary_region": secondary_region,
         "lz_selected": lz_selected,
         "lz_preset": preset_choice if include_lz else prefs.get("lz_preset", "Standard"),
@@ -513,6 +534,7 @@ def build_bom(client, region: str, inputs: dict, app_name: str, pricing_mode: st
         os_override=inputs.get("os_mode", "as-detected"),
         app_name=app_name, pricing_mode=pricing_mode,
         use_ahb=bool(inputs.get("__use_ahb__", False)),
+        cost_saving_mode=bool(inputs.get("cost_saving_mode", False)),
     )
 
     all_lines: List[BomLine] = []
