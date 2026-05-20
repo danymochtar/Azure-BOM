@@ -295,35 +295,89 @@ with st.sidebar:
 
 # ---------------- Upload ----------------
 st.subheader("1. Upload workload description(s)")
-uploaded_files = st.file_uploader(
-    "Upload ONE or MORE files. Mix and match — inventory + DB list + "
-    "licensing notes, or a single RVTools export. Supported: Excel/CSV "
-    "(RVTools, Azure Migrate, infra list), PDF (design doc, RFP), image "
-    "(screenshots), Word (.docx), plain text/markdown.",
-    type=ALL_SUPPORTED_EXTS,
-    accept_multiple_files=True,
-    help=(
-        "PDFs and images are read natively by Claude (no OCR preprocessing). "
-        "DOCX includes tables. Uploading multiple files is useful when "
-        "inventory, DB editions, and AHB / licensing details live in "
-        "separate docs — the app merges them into one assessment."
-    ),
-)
 
-if not uploaded_files:
-    st.info(
-        "Upload at least one file. Supports VM inventories (RVTools, Azure "
-        "Migrate, infra lists), SIEM/SOC design docs, AI use-cases, data-"
-        "platform specs, or mixed architecture documents. Multi-file upload "
-        "is supported — drop in additional docs to fill gaps."
+# Two input modes, side-by-side: file upload OR paste content directly.
+# Both feed the same downstream `uploads` list — classify each piece,
+# extract per pillar, merge into one assessment.
+tab_upload, tab_paste = st.tabs(["📁 Upload files", "📝 Paste content"])
+
+with tab_upload:
+    uploaded_files = st.file_uploader(
+        "Upload ONE or MORE files. Mix and match — inventory + DB list + "
+        "licensing notes, or a single RVTools export. Supported: Excel/CSV "
+        "(RVTools, Azure Migrate, infra list), PDF (design doc, RFP), image "
+        "(screenshots), Word (.docx), plain text/markdown.",
+        type=ALL_SUPPORTED_EXTS,
+        accept_multiple_files=True,
+        help=(
+            "PDFs and images are read natively by Claude (no OCR preprocessing). "
+            "DOCX includes tables. Uploading multiple files is useful when "
+            "inventory, DB editions, and AHB / licensing details live in "
+            "separate docs — the app merges them into one assessment. "
+            "Tip: screenshots can be dragged directly from the OS screenshot "
+            "tool into this uploader."
+        ),
+    ) or []
+
+with tab_paste:
+    st.caption(
+        "Paste text directly — useful for email bodies, meeting transcripts, "
+        "Slack/Teams chat summaries, or freeform requirements that aren't in "
+        "a file. The assessment treats this as an additional document."
     )
-    st.stop()
+    pasted_text = st.text_area(
+        "Paste content here",
+        height=240,
+        placeholder=(
+            "Examples:\n"
+            "• Email thread: \"From: customer@…\\nSubject: Azure migration\\n"
+            "We have 50 Linux VMs running PostgreSQL…\"\n"
+            "• Meeting notes: \"2025-11-12 — sizing call: target is 1,000 "
+            "concurrent users for the new RAG chatbot, ~5K queries/day…\"\n"
+            "• Requirements: \"Need Defender for Cloud P2 on all servers, "
+            "Sentinel ingestion 30 GB/day, 90-day retention…\""
+        ),
+        key="pasted_text_input",
+        label_visibility="collapsed",
+    )
+    paste_label = st.text_input(
+        "Optional label (defaults to `pasted-content.txt`)",
+        value="",
+        placeholder="e.g. customer-email.txt, meeting-2025-11-12.md",
+        key="pasted_text_label",
+    )
+    st.caption(
+        "💡 To include a screenshot, use the **📁 Upload files** tab — drag "
+        "the screenshot from the OS screenshot tool directly into the file "
+        "uploader (works in Chrome / Edge / Safari)."
+    )
 
-# Read + cache each file's bytes once
+# Merge file + pasted content into one stream. Pasted text becomes a
+# synthetic upload so it flows through classification + extraction the
+# same way as any other text/markdown file.
 uploads: list = []
 for f in uploaded_files:
     fb = f.read()
     uploads.append({"name": f.name, "bytes": fb})
+
+if (pasted_text or "").strip():
+    _name = (paste_label or "").strip() or "pasted-content.txt"
+    # If the user typed a name without an extension, default to .txt so the
+    # parser treats it as plain text/markdown.
+    if "." not in _name.rsplit("/", 1)[-1]:
+        _name += ".txt"
+    uploads.append({"name": _name, "bytes": pasted_text.encode("utf-8")})
+
+if not uploads:
+    st.info(
+        "Upload a file OR paste content above to get started. Supports VM "
+        "inventories (RVTools, Azure Migrate, infra lists), SIEM/SOC design "
+        "docs, AI use-cases, data-platform specs, mixed architecture "
+        "documents, or freeform paste (email, meeting transcript, "
+        "requirements). Multi-source input is supported — combine an "
+        "inventory file with a pasted email to fill gaps."
+    )
+    st.stop()
 
 # ---------------- Stage A: classify each file ----------------
 st.subheader("2. Workload classification")
