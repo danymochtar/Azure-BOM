@@ -46,7 +46,16 @@ class LzComponent:
 
 
 def _cheapest(records: List[PriceRecord]) -> Optional[PriceRecord]:
-    return min(records, key=lambda r: r.retail_price) if records else None
+    """Cheapest record by retail_price, but prefer non-zero — a $0 record
+    is almost always a free-tier meter (e.g. 'Free Data Analysis',
+    'Basic Data Transfer Out — 5GB Free') and silently kills the BOM
+    line. Only fall through to $0 records when EVERYTHING is $0."""
+    if not records:
+        return None
+    non_zero = [r for r in records if r.retail_price > 0]
+    if non_zero:
+        return min(non_zero, key=lambda r: r.retail_price)
+    return min(records, key=lambda r: r.retail_price)
 
 
 def _contains(meter_substr: str):
@@ -219,7 +228,10 @@ LANDING_ZONE_COMPONENTS: List[LzComponent] = [
             f"serviceName eq 'Azure Bastion' and armRegionName eq '{region}' "
             f"and priceType eq 'Consumption'"
         ),
-        pick=_contains("Basic"),
+        # "Basic" alone matches both 'Basic Deployment' (hourly, $0.19/hr)
+        # and 'Basic Data Transfer Out — 5GB Free' ($0). We want the
+        # hourly deployment meter, so match on both substrings.
+        pick=_contains_all("basic", "deployment"),
         notes="Basic tier, 1 instance. Add data out separately if needed.",
     ),
     LzComponent(
@@ -699,6 +711,11 @@ def build_landing_zone_bom(
             continue
         records = client.query(comp.build_filter(region), max_pages=5)
         chosen = (comp.pick(records) if comp.pick else _cheapest(records))
+        # Layer-2 defense: if the picker landed on a $0 record (free-tier
+        # meter that snuck through), treat it as "not found" so the static
+        # fallback below kicks in. A real BOM line should never be $0.
+        if chosen is not None and chosen.retail_price <= 0:
+            chosen = None
         if not chosen:
             # Retail feed (and any regional fallback) returned nothing — fall
             # back to the dated static reference table so the BOM still shows
