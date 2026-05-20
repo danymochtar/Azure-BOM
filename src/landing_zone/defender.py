@@ -93,15 +93,81 @@ DEFENDER_PLANS: List[DefenderPlan] = [
         count_source="manual",
         notes="Per AKS node vCore.",
     ),
+    DefenderPlan(
+        key="cosmos",
+        resource="Defender for Cosmos DB",
+        default_enabled=False,
+        unit="100 RU/s-month",
+        build_filter=lambda r: _filter("Microsoft Defender for Cloud", r),
+        pick_substring="Cosmos DB",
+        count_source="manual",
+        notes="Per 100 RU/s provisioned throughput, normalised. Counts manual RU/s blocks.",
+    ),
+    DefenderPlan(
+        key="oss_db",
+        resource="Defender for Open-Source Relational Databases",
+        default_enabled=False,
+        unit="vCore/month",
+        build_filter=lambda r: _filter("Microsoft Defender for Cloud", r),
+        pick_substring="Relational Databases",
+        count_source="manual",
+        notes="Per server vCore — covers PostgreSQL/MySQL/MariaDB Flexible Servers.",
+    ),
+    DefenderPlan(
+        key="ai",
+        resource="Defender for AI workloads",
+        default_enabled=False,
+        unit="OpenAI resource/month",
+        build_filter=lambda r: _filter("Microsoft Defender for Cloud", r),
+        pick_substring="AI",
+        count_source="manual",
+        notes="Per Azure OpenAI / Foundry deployment. New (2025) — prompt injection + DLP.",
+    ),
+    DefenderPlan(
+        key="apis",
+        resource="Defender for APIs",
+        default_enabled=False,
+        unit="API/month",
+        build_filter=lambda r: _filter("Microsoft Defender for Cloud", r),
+        pick_substring="APIs",
+        count_source="manual",
+        notes="Per API protected — for APIs exposed through API Management.",
+    ),
+    DefenderPlan(
+        key="rm",
+        resource="Defender for Resource Manager",
+        default_enabled=False,
+        unit="subscription/month",
+        build_filter=lambda r: _filter("Microsoft Defender for Cloud", r),
+        pick_substring="Resource Manager",
+        count_source="manual",
+        notes="Per subscription. Detects suspicious ARM-level operations.",
+    ),
+    DefenderPlan(
+        key="dns",
+        resource="Defender for DNS",
+        default_enabled=False,
+        unit="subscription/month",
+        build_filter=lambda r: _filter("Microsoft Defender for Cloud", r),
+        pick_substring="DNS",
+        count_source="manual",
+        notes="Per subscription. Detects data exfil + C2 via DNS tunnelling.",
+    ),
 ]
 
 
 def _pick(records: List[PriceRecord], substring: str) -> Optional[PriceRecord]:
+    """Cheapest matching meter, but skip $0 free-tier records when paid
+    alternatives exist (same hardening pattern as the LZ pickers)."""
     s = substring.lower()
     matches = [r for r in records if s in r.meter_name.lower() or s in r.product_name.lower()]
     if not matches:
         matches = records
-    return min(matches, key=lambda r: r.retail_price) if matches else None
+    if not matches:
+        return None
+    non_zero = [r for r in matches if r.retail_price > 0]
+    pool = non_zero if non_zero else matches
+    return min(pool, key=lambda r: r.retail_price)
 
 
 def build_defender_bom(

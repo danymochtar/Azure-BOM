@@ -910,6 +910,9 @@ for pk in active_pillars:
         _defender_rationale = merged_prefs.pop("__defender_rationale__", "")
         if _defender_rationale:
             _alog[pk].append(_defender_rationale)
+        _mc_rationale = merged_prefs.pop("__multicloud_rationale__", "")
+        if _mc_rationale:
+            _alog[pk].append(_mc_rationale)
         if effective_mode != compute_mode:
             _alog[pk].append(
                 f"Compute mode override: this pillar uses **{effective_mode}** "

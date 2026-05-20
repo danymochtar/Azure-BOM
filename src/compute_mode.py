@@ -671,6 +671,55 @@ def apply_baselines(
         return apply_data_platform_baselines(mode, prefs, *hints)
     if pillar == "azure_security":
         return apply_azure_security_baselines(mode, prefs, *hints)
+    if pillar == "hybrid_multicloud":
+        return apply_hybrid_multicloud_baselines(mode, prefs, *hints)
+    return prefs
+
+
+def apply_hybrid_multicloud_baselines(
+    mode: str, prefs: Dict[str, Any], *hints: Any,
+) -> Dict[str, Any]:
+    """Seed multi-cloud Defender + Arc server counts when AWS / GCP /
+    on-prem are mentioned. Mirrors the azure_security baseline but
+    targets the hybrid pillar's `multicloud_defender` + `arc_servers`
+    fields. Never overwrites existing user picks."""
+    mode = _resolve_mode(mode)
+    blob = " ".join(_flatten_text(h) for h in hints).lower()
+
+    # Detect non-Azure footprints
+    has_aws   = any(k in blob for k in ("aws", "amazon web services", "ec2", "eks", "s3"))
+    has_gcp   = any(k in blob for k in ("gcp", "google cloud", "gke", "gcs", "compute engine"))
+    has_onprem = any(k in blob for k in ("on-prem", "on prem", "data center", "datacenter",
+                                          "vmware", "rvtools", "physical server"))
+    if not (has_aws or has_gcp or has_onprem):
+        return prefs  # not a multicloud workload — let user populate manually
+
+    # Default Defender plans for multi-cloud — Servers P2 + CSPM are
+    # always recommended when you connect non-Azure resources via Arc.
+    defender = list(prefs.get("multicloud_defender") or [])
+    rationale_parts = []
+    for plan in ("servers_p2", "cspm", "storage"):
+        if plan not in defender:
+            defender.append(plan)
+    prefs["multicloud_defender"] = defender
+
+    # Conservative Arc server count defaults — placeholder until the user
+    # types a real number.
+    arc = dict(prefs.get("arc_servers") or {})
+    if has_aws and not arc.get("aws"):
+        arc["aws"] = 10
+    if has_gcp and not arc.get("gcp"):
+        arc["gcp"] = 10
+    if has_onprem and not arc.get("onprem"):
+        arc["onprem"] = 25
+    prefs["arc_servers"] = arc
+
+    rationale_parts.append(
+        f"Multi-cloud detected (AWS={has_aws}, GCP={has_gcp}, "
+        f"on-prem={has_onprem}). Seeded Defender plans: {defender}. "
+        f"Arc server counts: {arc} (placeholders — override in the widget)."
+    )
+    prefs["__multicloud_rationale__"] = " ".join(rationale_parts)
     return prefs
 
 
@@ -711,18 +760,33 @@ def apply_baselines(
 _LZ_PRESET_SECURITY_BASELINE: Dict[str, List[str]] = {
     "Basic":      ["cspm", "servers_p2"],
     "Foundation": ["cspm", "servers_p2", "storage", "keyvault"],
-    "Standard":   ["cspm", "servers_p2", "storage", "keyvault", "sentinel"],
+    # Standard adds plane-level coverage (DNS + Resource Manager) +
+    # Sentinel ingestion, per CAF "Secure" methodology.
+    "Standard":   ["cspm", "servers_p2", "storage", "keyvault", "sentinel",
+                   "dns", "rm"],
+    # Enterprise extends with private-link / PIM and pre-arms the
+    # advanced Defender plans Microsoft recommends for enterprise
+    # landing zones with mixed workloads.
     "Enterprise": ["cspm", "servers_p2", "storage", "keyvault", "sentinel",
-                   "private_link", "pim"],
+                   "dns", "rm", "private_link", "pim"],
 }
 
 _SECURITY_WORKLOAD_TRIGGERS: List[Tuple[str, Tuple[str, ...]]] = [
     ("sql_on_vms", ("sql server", "mssql", "sql on vm", "sql-server", "-sql-")),
     ("containers", ("aks", "kubernetes", "k8s", "container apps", "containers")),
-    ("appsvc",     ("app service", "app-service", "appsvc", "premium v3", "p1v3", "p2v3", "p3v3")),
+    ("appsvc",     ("app service", "app-service", "appsvc", "premium v3",
+                    "p1v3", "p2v3", "p3v3", "p1mv3")),
     ("waf",        ("waf", "web application firewall", "app gateway")),
     ("purview",    ("purview", "data catalog", "lineage", "data classification")),
     ("pim",        ("pim ", "privileged identity", "just-in-time", " jit ", "eligible role")),
+    # New (Phase-2 follow-up):
+    ("cosmos",     ("cosmos", "document db", "documentdb", "cosmos db")),
+    ("oss_db",     ("postgres", "postgresql", "mysql", "mariadb", "open-source rdbms")),
+    ("ai",         ("openai", "azure openai", "gpt-4", "gpt-4o", "gpt-4.1",
+                    "foundry", "llama", "mistral", "cognitive services",
+                    "ai search", "rag pipeline", "fine-tun")),
+    ("apis",       ("api management", "apim", "azure api", "api gateway",
+                    "external api", "public api")),
 ]
 
 
