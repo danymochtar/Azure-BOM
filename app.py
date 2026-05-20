@@ -361,19 +361,12 @@ pasted_text = st.text_area(
     ),
     key="pasted_text_input",
 )
-paste_label = st.text_input(
-    "Optional label for the pasted content (defaults to `pasted-content.txt`)",
-    value="",
-    placeholder="e.g. customer-email.txt, meeting-2025-11-12.md",
-    key="pasted_text_label",
-)
-
 # --- Clipboard image paste (third-party component) ---
 pasted_image = None
 try:
     from streamlit_paste_button import paste_image_button
     _paste_result = paste_image_button(
-        label="📋 Or paste a screenshot from the clipboard",
+        label="📋 Submit screenshot from clipboard",
         key="paste_img_btn",
         errors="ignore",
     )
@@ -393,9 +386,8 @@ for f in uploaded_files:
     uploads.append({"name": f.name, "bytes": fb})
 
 if (pasted_text or "").strip():
-    _name = (paste_label or "").strip() or "pasted-content.txt"
-    if "." not in _name.rsplit("/", 1)[-1]:
-        _name += ".txt"
+    import time as _time
+    _name = f"pasted-content-{int(_time.time())}.txt"
     uploads.append({"name": _name, "bytes": pasted_text.encode("utf-8")})
 
 if pasted_image is not None:
