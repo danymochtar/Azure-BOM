@@ -4,8 +4,11 @@ from __future__ import annotations
 from typing import Dict, List, Tuple
 
 from ..models import BomLine, InventoryItem
-from ..mapper import recommend_vm, recommend_disk, recommend_disk_tier
-from ..mapper.sizer import os_is_windows, is_non_prod
+from ..mapper import (
+    recommend_vm, recommend_disk, recommend_disk_tier,
+    is_non_prod, is_sql_server, env_tag, role_tag,
+)
+from ..mapper.sizer import os_is_windows
 from ..mapper.vm_catalog import VM_CATALOG, VmSku
 from ..pricing.retail import RetailPricesClient, HOURS_PER_MONTH
 
@@ -131,12 +134,26 @@ def build_compute_bom(
             if (non_prod_payg and pricing_mode != "payg" and is_non_prod(item))
             else pricing_mode
         )
-        # Group also keys on billing term so prod (RI) and non-prod
-        # (PAYG) of the same SKU appear as two distinct BOM lines.
-        key = (sku.arm_name, win, item_billing)
-        vm_groups.setdefault(key, {"sku": sku, "count": 0, "names": [], "billing": item_billing})
+        # Group by (SKU, OS, billing, environment, role) so functionally
+        # distinct VMs don't silently merge. Two D4s v5 Linux VMs named
+        # "Server 1 PROD App" and "Server 3 UAT App" used to collapse
+        # into one "D4s v5 (Linux) ×2" line — confusing for review.
+        # Now they emit as two lines: "(prod, app) ×1" and "(uat, app)
+        # ×1", and a "DB (PROD)" Windows VM stays separate from app
+        # servers at the same SKU.
+        item_env = env_tag(item)
+        item_role = role_tag(item)
+        key = (sku.arm_name, win, item_billing, item_env, item_role)
+        vm_groups.setdefault(key, {
+            "sku": sku, "count": 0, "names": [],
+            "billing": item_billing, "env": item_env, "role": item_role,
+            "vcpu_total": 0, "is_sql": False,
+        })
         vm_groups[key]["count"] += 1
         vm_groups[key]["names"].append(item.name)
+        vm_groups[key]["vcpu_total"] += sku.vcpu
+        if is_sql_server(item):
+            vm_groups[key]["is_sql"] = True
 
         # Per-VM disk-tier auto-recommendation. DB / SQL / Oracle /
         # Mongo / etc. → Premium SSD; backup / archive / file / log →
@@ -167,7 +184,7 @@ def build_compute_bom(
         })
 
     # Price VMs
-    for (arm_name, win, group_billing), grp in vm_groups.items():
+    for (arm_name, win, group_billing, group_env, group_role), grp in vm_groups.items():
         sku = grp["sku"]
         # Custom name = concatenated VM names (short) or "<app>-<sku>" fallback
         names = grp["names"]
@@ -203,7 +220,7 @@ def build_compute_bom(
         if not price:
             lines.append(BomLine(
                 category="Compute",
-                resource=f"Virtual Machine - {sku.display} ({os_label}){license_tag}",
+                resource=f"Virtual Machine - {sku.display} ({os_label}, {group_env}/{group_role}){license_tag}",
                 sku=arm_name,
                 meter="(price not found)",
                 region=region,
@@ -225,7 +242,7 @@ def build_compute_bom(
         )
         lines.append(BomLine(
             category="Compute",
-            resource=f"Virtual Machine - {sku.display} ({os_label}){license_tag}",
+            resource=f"Virtual Machine - {sku.display} ({os_label}, {group_env}/{group_role}){license_tag}",
             sku=arm_name,
             meter=price.meter_name,
             region=region,
@@ -243,6 +260,43 @@ def build_compute_bom(
             resource_count=int(grp["count"]),
             assumption=swap_note,
         ))
+
+        # SQL Server VM license line — only when VM is detected as
+        # SQL Server AND `use_ahb_sql` is OFF (AHB-SQL means customer
+        # is bringing their own SQL Server license via Software
+        # Assurance). Rate captured Oct-2025 from Microsoft Learn
+        # "SQL Server on Azure VMs" pricing page; Standard edition
+        # baseline. Reviewers can upgrade to Enterprise via the
+        # Cost Assumptions sheet if needed.
+        if grp.get("is_sql") and not use_ahb_sql:
+            sql_license_per_core_hr = 0.4080   # SQL Server Standard PAYG
+            sql_cores = grp["vcpu_total"]
+            sql_hours = HOURS_PER_MONTH
+            sql_monthly = sql_license_per_core_hr * sql_cores * sql_hours
+            lines.append(BomLine(
+                category="Compute",
+                resource=f"SQL Server VM license (Standard) — {grp['count']}× {sku.display} ({group_env}/{group_role})",
+                sku="SQL_Server_Std_PAYG",
+                meter="SQL Server Standard — PAYG per core-hour",
+                region=region,
+                quantity=sql_cores * sql_hours,
+                unit="core-hours",
+                unit_price=sql_license_per_core_hr,
+                monthly_cost=round(sql_monthly, 2),
+                currency=price.currency_code if price else "USD",
+                source="static-reference",
+                service_name="SQL Server on Azure VMs",
+                custom_name=f"{vm_custom}-SQLSvr-Std",
+                resource_count=int(grp["count"]),
+                assumption=(
+                    f"SQL Server VM license auto-added: detected `sql`/`mssql` "
+                    f"in {grp['count']} VM name(s). Standard edition PAYG "
+                    f"(~$0.408/core-hr × {sql_cores} cores). Toggle "
+                    f"`SQL Server AHB` ON in Assessment context to BYOL "
+                    f"(zero this line) if customer has SA. Upgrade to "
+                    f"Enterprise (~$1.539/core-hr) for mission-critical."
+                ),
+            ))
 
     # Price disks
     for sku_name, grp in disk_groups.items():

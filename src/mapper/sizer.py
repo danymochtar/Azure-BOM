@@ -42,6 +42,98 @@ NON_PROD_TOKENS: tuple = (
 )
 
 
+# Granular environment + role extraction so the BOM groups VMs by
+# functional role + environment instead of silently merging "PROD
+# Application Server" with "UAT Application Server" because both
+# happen to be 4 vCPU / 16 GB Linux. The label tokens come from
+# common naming conventions seen in RVTools / Azure Migrate exports.
+
+_ENV_PRIORITY: tuple = (
+    # Order matters — more specific first. "preprod" must match before
+    # "prod" so that "preprod-app" routes to "preprod", not "prod".
+    ("preprod",  ("preprod", "pre-prod", "stage", "stg", "staging")),
+    ("sit",      ("sit ", "-sit-", "_sit_")),
+    ("uat",      ("uat",)),
+    ("qa",       ("qa ", "-qa-", "_qa_")),
+    ("test",     ("test",)),
+    ("dev",      ("dev ", "-dev-", "_dev_", "develop")),
+    ("sandbox",  ("sandbox", "sbx")),
+    ("training", ("training", "train ")),
+    ("prod",     ("prod",)),
+)
+
+_ROLE_TOKENS: tuple = (
+    # role → list of name substrings that imply it. First match wins
+    # in the order below (most specific → least specific).
+    ("sql",      ("mssql", "sql server", "sqlserver", "sql-server", "sql_server",
+                  "sql-prod", "sql-uat", "sql-dev", "sql-test",
+                  "sql_", "-sql-", " sql ", "sql-cluster")),
+    ("db",       ("oracle", "ora-db", "postgres", "pg-db", "mysql", "mariadb",
+                  "mongo", "cassandra", "redis-server", "elastic-data",
+                  "-db-", "_db_", " db ", "(db)", "database")),
+    ("report",   ("jasper", "report", "tableau", "powerbi-rs", "ssrs", "bi-")),
+    ("etl",      ("etl ", "-etl-", "informatica", "ssis-vm", "talend")),
+    ("queue",    ("rabbitmq", "kafka", "activemq", "messagebroker")),
+    ("cache",    ("redis", "memcache", "varnish")),
+    ("web",      ("web", "frontend", "front-end", "nginx", "apache",
+                  "iis", "tomcat", "node-")),
+    ("app",      ("app server", "application server", "application", "-app-",
+                  "_app_", " app ", "appserver")),
+    ("dc",       ("domain controller", "ad-dc", "adfs", " dc-")),
+    ("file",     ("fileserver", "file-server", "nas-", "smb-", "ftp-",
+                  "sftp-")),
+    ("backup",   ("backup", "veeam", "rubrik", "commvault")),
+    ("log",      ("log-", "syslog", "logserver", "splunk-forwarder")),
+    ("jumphost", ("jumphost", "jump-host", "bastion-host", "jumpbox",
+                  "hop-")),
+    ("monitor",  ("monitor", "nagios", "zabbix", "prometheus", "grafana")),
+)
+
+
+def env_tag(item: InventoryItem) -> str:
+    """Return a stable environment label ('prod' / 'uat' / 'dev' / etc.)
+    inferred from `item.environment` first, then VM name. Defaults to
+    'prod' when nothing matches (matches the conservative default used
+    by `is_non_prod()`)."""
+    haystack = (
+        (item.environment or "").lower()
+        + " "
+        + (item.name or "").lower()
+    )
+    for env_label, tokens in _ENV_PRIORITY:
+        if any(t in haystack for t in tokens):
+            return env_label
+    return "prod"
+
+
+def role_tag(item: InventoryItem) -> str:
+    """Return a stable role label ('sql' / 'db' / 'app' / 'web' / 'report'
+    / 'etl' / etc.) inferred from VM name + notes. Returns 'generic' when
+    nothing matches — keeps the grouping safe (one big bucket) rather
+    than over-splitting."""
+    haystack = ((item.name or "") + " " + (item.notes or "")).lower()
+    for role, tokens in _ROLE_TOKENS:
+        if any(t in haystack for t in tokens):
+            return role
+    return "generic"
+
+
+def is_sql_server(item: InventoryItem) -> bool:
+    """True when the VM looks like a Microsoft SQL Server workload —
+    explicit `sql`/`mssql`/`sql server` tokens in name OR notes. Only
+    these specific markers trigger SQL Server licensing; a generic
+    'db' name could be Oracle / Postgres / Mongo and gets no Microsoft
+    license line."""
+    haystack = ((item.name or "") + " " + (item.notes or "")).lower()
+    return any(t in haystack for t in (
+        "mssql", "ms-sql", "ms_sql",
+        "sql server", "sqlserver", "sql-server", "sql_server",
+        "-sql-", "_sql_", " sql ",
+        "sql-prod", "sql-uat", "sql-dev", "sql-test",
+        "sql-cluster",
+    ))
+
+
 def is_non_prod(item: InventoryItem) -> bool:
     """True if the item looks like a non-production workload — checks the
     explicit environment tag first, then falls back to substring matching
