@@ -156,18 +156,7 @@ DEFENDER_PLANS: List[DefenderPlan] = [
 ]
 
 
-def _pick(records: List[PriceRecord], substring: str) -> Optional[PriceRecord]:
-    """Cheapest matching meter, but skip $0 free-tier records when paid
-    alternatives exist (same hardening pattern as the LZ pickers)."""
-    s = substring.lower()
-    matches = [r for r in records if s in r.meter_name.lower() or s in r.product_name.lower()]
-    if not matches:
-        matches = records
-    if not matches:
-        return None
-    non_zero = [r for r in matches if r.retail_price > 0]
-    pool = non_zero if non_zero else matches
-    return min(pool, key=lambda r: r.retail_price)
+from ..pricing.picker import pick_by_substring as _pick
 
 
 def build_defender_bom(

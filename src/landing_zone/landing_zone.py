@@ -45,35 +45,28 @@ class LzComponent:
     derived: bool = False
 
 
-def _cheapest(records: List[PriceRecord]) -> Optional[PriceRecord]:
-    """Cheapest record by retail_price, but prefer non-zero — a $0 record
-    is almost always a free-tier meter (e.g. 'Free Data Analysis',
-    'Basic Data Transfer Out — 5GB Free') and silently kills the BOM
-    line. Only fall through to $0 records when EVERYTHING is $0."""
-    if not records:
-        return None
-    non_zero = [r for r in records if r.retail_price > 0]
-    if non_zero:
-        return min(non_zero, key=lambda r: r.retail_price)
-    return min(records, key=lambda r: r.retail_price)
+# Local picker shims delegate to the centralised helpers in
+# `src/pricing/picker.py` (single source of truth). Kept as
+# closure-factories so the LzComponent pick contract
+# `Callable[[List[PriceRecord]], Optional[PriceRecord]]` stays the
+# same — switching them would touch the entire LANDING_ZONE_COMPONENTS
+# table for no gain.
+from ..pricing.picker import (
+    cheapest_nonzero as _cheapest,
+    pick_by_substring as _pick_substr,
+    pick_by_substrings as _pick_all,
+)
 
 
 def _contains(meter_substr: str):
     def picker(records: List[PriceRecord]) -> Optional[PriceRecord]:
-        s = meter_substr.lower()
-        filtered = [r for r in records if s in r.meter_name.lower()]
-        return _cheapest(filtered) or _cheapest(records)
+        return _pick_substr(records, meter_substr)
     return picker
 
 
 def _contains_all(*substrs: str):
     def picker(records: List[PriceRecord]) -> Optional[PriceRecord]:
-        subs = [s.lower() for s in substrs]
-        filtered = [
-            r for r in records
-            if all(s in r.meter_name.lower() for s in subs)
-        ]
-        return _cheapest(filtered) or _cheapest(records)
+        return _pick_all(records, *substrs)
     return picker
 
 

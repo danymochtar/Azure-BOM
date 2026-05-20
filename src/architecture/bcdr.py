@@ -16,15 +16,7 @@ from ..models import BomLine, InventoryItem
 from ..pricing.retail import RetailPricesClient, PriceRecord
 
 
-def _pick(records: List[PriceRecord], substr: str) -> Optional[PriceRecord]:
-    sub = substr.lower()
-    matches = [
-        r for r in records
-        if sub in r.meter_name.lower() or sub in r.product_name.lower()
-    ]
-    if not matches:
-        matches = records
-    return min(matches, key=lambda r: r.retail_price) if matches else None
+from ..pricing.picker import pick_by_substring as _pick
 
 
 def build_bcdr_bom(
