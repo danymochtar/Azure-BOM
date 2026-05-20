@@ -33,6 +33,13 @@ class BomLine:
     # Azure Pricing Calculator template fields
     service_name: str = ""   # e.g., "Virtual Machines", "Managed Disks", "Azure Firewall"
     custom_name: str = ""    # per-line tag: app name / workload / hub-role
+    # Number of distinct identical resources represented by this line —
+    # e.g. 4 for "Virtual Machine D4s v5 (Linux) x4". Lives in its own
+    # column so reviewers don't have to parse "x4" out of the resource
+    # string. Default 1 for single-resource lines (firewall, log
+    # analytics, key vault, etc.). The `quantity` column is still the
+    # per-resource usage figure (730 hours, 100 GB, etc.).
+    resource_count: int = 1
     # Audit trail — written to the Cost Assumptions sheet of the exported
     # Excel. Builders with rich context (AHB %, tiered bandwidth, SQL DB
     # discount, Fabric rationale, static DevTools rate, multi-file merge

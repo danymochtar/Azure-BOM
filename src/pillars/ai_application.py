@@ -353,17 +353,18 @@ def _gpu_vm_lines(
     if not price:
         return [BomLine(
             category="AI + ML",
-            resource=f"GPU VM — {arm_sku} x{count}",
+            resource=f"GPU VM — {arm_sku}",
             sku=arm_sku, meter="(price not found)",
             region=region, quantity=qty, unit="hours",
             unit_price=0.0, monthly_cost=0.0,
             source="retail-prices-miss",
             service_name="Virtual Machines",
             custom_name=f"{app_name}-GPU-{arm_sku}" if app_name else f"GPU-{arm_sku}",
+            resource_count=int(count),
         )]
     return [BomLine(
         category="AI + ML",
-        resource=f"GPU VM — {arm_sku} x{count} ({'Windows' if os_is_windows else 'Linux'})",
+        resource=f"GPU VM — {arm_sku} ({'Windows' if os_is_windows else 'Linux'})",
         sku=arm_sku, meter=price.meter_name,
         region=region, quantity=qty, unit="hours",
         unit_price=price.retail_price,
@@ -373,6 +374,7 @@ def _gpu_vm_lines(
         product_id=price.product_id, sku_id=price.sku_id, meter_id=price.meter_id,
         service_name="Virtual Machines",
         custom_name=f"{app_name}-GPU-{arm_sku}" if app_name else f"GPU-{arm_sku}",
+        resource_count=int(count),
     )]
 
 

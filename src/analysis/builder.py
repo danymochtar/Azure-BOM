@@ -123,12 +123,13 @@ def build_compute_bom(
                 source="retail-prices-miss",
                 service_name="Virtual Machines",
                 custom_name=vm_custom,
+                resource_count=int(grp["count"]),
             ))
             continue
         qty_hours = grp["count"] * HOURS_PER_MONTH
         lines.append(BomLine(
             category="Compute",
-            resource=f"Virtual Machine - {sku.display} ({os_label}) x{grp['count']}{license_tag}",
+            resource=f"Virtual Machine - {sku.display} ({os_label}){license_tag}",
             sku=arm_name,
             meter=price.meter_name,
             region=region,
@@ -143,6 +144,7 @@ def build_compute_bom(
             meter_id=price.meter_id,
             service_name="Virtual Machines",
             custom_name=vm_custom,
+            resource_count=int(grp["count"]),
         ))
 
     # Price disks
@@ -153,7 +155,7 @@ def build_compute_bom(
         if not price:
             lines.append(BomLine(
                 category="Storage",
-                resource=f"Managed Disk - {disk.tier} {disk.sku} x{grp['count']}",
+                resource=f"Managed Disk - {disk.tier} {disk.sku}",
                 sku=disk.sku,
                 meter=disk.meter_name,
                 region=region,
@@ -164,11 +166,12 @@ def build_compute_bom(
                 source="retail-prices-miss",
                 service_name="Managed Disks",
                 custom_name=disk_custom,
+                resource_count=int(grp["count"]),
             ))
             continue
         lines.append(BomLine(
             category="Storage",
-            resource=f"Managed Disk - {disk.tier} {disk.sku} x{grp['count']}",
+            resource=f"Managed Disk - {disk.tier} {disk.sku}",
             sku=disk.sku,
             meter=price.meter_name,
             region=region,
@@ -183,6 +186,7 @@ def build_compute_bom(
             meter_id=price.meter_id,
             service_name="Managed Disks",
             custom_name=disk_custom,
+            resource_count=int(grp["count"]),
         ))
 
     return lines, mapping_rows

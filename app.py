@@ -875,6 +875,15 @@ if "bom_lines" in st.session_state:
             else ["product_id", "sku_id", "meter_id", "source"]
         )
         _display_df = df.drop(columns=[c for c in _hide_cols if c in df.columns])
+        # Surface `resource_count` right after `resource` and rename it
+        # to "#" so reviewers see the instance count next to the SKU
+        # instead of having to parse "x4" out of the resource string.
+        if "resource_count" in _display_df.columns:
+            cols = list(_display_df.columns)
+            cols.remove("resource_count")
+            insert_at = cols.index("resource") + 1 if "resource" in cols else 0
+            cols.insert(insert_at, "resource_count")
+            _display_df = _display_df[cols].rename(columns={"resource_count": "#"})
         st.dataframe(_display_df, use_container_width=True, hide_index=True)
 
     # Token spend breakdown — per-process Claude API usage + USD cost
