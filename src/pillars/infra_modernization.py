@@ -81,6 +81,32 @@ SERVICE_BUS_TIERS: Dict[str, Dict] = {
 # Line builders
 # ---------------------------------------------------------------------------
 
+# Reserved-instance / Savings-plan discount approximations for non-VM
+# Azure compute. The Retail Prices API does carry Reservation meters
+# for these services but the meter naming + reservationTerm handling
+# is inconsistent across regions — the defensible approach for an
+# assessment-stage estimate is a documented discount multiplier
+# applied to the Consumption rate. Numbers reflect Microsoft published
+# discount ranges (Oct-2025):
+#
+# App Service Reserved (Premium v3 / Isolated v2):
+#   RI 1Y ≈ 30% off PAYG | RI 3Y ≈ 55% off
+#   SP 1Y ≈ 15% off       | SP 3Y ≈ 40% off
+# https://azure.microsoft.com/en-us/pricing/details/app-service/windows/
+_APP_SVC_BILLING_DISCOUNT = {
+    "payg": 0.0,  "sp_1y": 0.15, "sp_3y": 0.40,
+    "ri_1y": 0.30, "ri_3y": 0.55,
+}
+_APP_SVC_BILLING_TAG = {
+    "payg": "", "sp_1y": " [SP 1Y]", "sp_3y": " [SP 3Y]",
+    "ri_1y": " [RI 1Y]", "ri_3y": " [RI 3Y]",
+}
+_APP_SVC_BILLING_LABEL = {
+    "payg": "PAYG", "sp_1y": "SP 1Y", "sp_3y": "SP 3Y",
+    "ri_1y": "RI 1Y", "ri_3y": "RI 3Y",
+}
+
+
 def _app_service_line(
     client: RetailPricesClient, region: str,
     plan_sku: str, count: int, os_is_windows: bool, pricing_mode: str, app_name: str,
@@ -101,18 +127,32 @@ def _app_service_line(
     if not chosen:
         return None
     qty = count * HOURS_PER_MONTH
+    # Apply Reserved / Savings Plan discount when applicable.
+    discount = _APP_SVC_BILLING_DISCOUNT.get(pricing_mode, 0.0)
+    effective_rate = chosen.retail_price * (1.0 - discount)
+    term_tag = _APP_SVC_BILLING_TAG.get(pricing_mode, "")
+    billing_lbl = _APP_SVC_BILLING_LABEL.get(pricing_mode, "PAYG")
+    discount_note = (
+        f"App Service Reserved discount: -{int(discount*100)}% off PAYG "
+        f"(${chosen.retail_price:.4f}/hr → ${effective_rate:.4f}/hr). "
+        f"Approximation per MS published RI/SP ranges; exact reservation "
+        f"meter pricing varies by plan."
+        if discount > 0 else ""
+    )
     return BomLine(
         category="App Modernization",
-        resource=f"Azure App Service {plan_sku} × {count} ({'Windows' if os_is_windows else 'Linux'})",
+        resource=f"Azure App Service {plan_sku} × {count} ({'Windows' if os_is_windows else 'Linux'}){term_tag}",
         sku=chosen.sku_name or chosen.product_name, meter=chosen.meter_name,
         region=region, quantity=qty, unit="hours",
-        unit_price=chosen.retail_price,
-        monthly_cost=round(chosen.retail_price * qty, 2),
+        unit_price=effective_rate,
+        monthly_cost=round(effective_rate * qty, 2),
         currency=chosen.currency_code,
-        source="retail-prices",
+        source="retail-prices" + (" + ri-approx" if discount > 0 else ""),
         product_id=chosen.product_id, sku_id=chosen.sku_id, meter_id=chosen.meter_id,
         service_name="Azure App Service",
         custom_name=f"{app_name}-AppService-{plan_sku}" if app_name else f"AppService-{plan_sku}",
+        billing_term=billing_lbl,
+        assumption=discount_note,
     )
 
 

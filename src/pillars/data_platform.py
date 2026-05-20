@@ -234,10 +234,24 @@ _SQL_DB_AHB_DISCOUNT: Dict[str, float] = {
 }
 
 
+# SQL DB Reserved Capacity discount approximations (Oct-2025):
+#   1Y commitment ≈ 22% off PAYG (GP / BC / HS provisioned)
+#   3Y commitment ≈ 37% off
+# Savings Plan for SQL DB not currently offered by MS — only RI.
+# https://azure.microsoft.com/en-us/pricing/details/azure-sql-database/single/
+_SQL_DB_RI_DISCOUNT = {"payg": 0.0, "sp_1y": 0.0, "sp_3y": 0.0,
+                       "ri_1y": 0.22, "ri_3y": 0.37}
+_SQL_DB_BILLING_TAG = {"payg": "", "sp_1y": "", "sp_3y": "",
+                       "ri_1y": " [RI 1Y]", "ri_3y": " [RI 3Y]"}
+_SQL_DB_BILLING_LABEL = {"payg": "PAYG", "sp_1y": "PAYG", "sp_3y": "PAYG",
+                         "ri_1y": "RI 1Y", "ri_3y": "RI 3Y"}
+
+
 def _azure_sql_db_lines(
     client: RetailPricesClient, region: str,
     tier_key: str, vcores: int, storage_gb: int, zone_redundant: bool, app_name: str,
     use_ahb_sql: bool = False,
+    pricing_mode: str = "payg",
 ) -> List[BomLine]:
     if tier_key == "none" or vcores <= 0:
         return []
@@ -259,22 +273,40 @@ def _azure_sql_db_lines(
     out: List[BomLine] = []
     if compute:
         qty = vcores * HOURS_PER_MONTH
-        discount = _SQL_DB_AHB_DISCOUNT.get(tier_key, 0.0) if use_ahb_sql else 0.0
-        effective_rate = compute.retail_price * (1.0 - discount)
-        ahb_tag = f" [AHB -{int(discount*100)}%]" if use_ahb_sql else ""
+        # AHB SQL discount stacks on top of any RI discount — both are
+        # multiplicative on the PAYG rate.
+        ahb_disc = _SQL_DB_AHB_DISCOUNT.get(tier_key, 0.0) if use_ahb_sql else 0.0
+        ri_disc = _SQL_DB_RI_DISCOUNT.get(pricing_mode, 0.0)
+        effective_rate = compute.retail_price * (1.0 - ahb_disc) * (1.0 - ri_disc)
+        ahb_tag = f" [AHB -{int(ahb_disc*100)}%]" if use_ahb_sql else ""
+        ri_tag = _SQL_DB_BILLING_TAG.get(pricing_mode, "")
         zr_tag = " [ZR]" if zone_redundant else ""
+        billing_lbl = _SQL_DB_BILLING_LABEL.get(pricing_mode, "PAYG")
+        # Per-line assumption stamps each discount with its source rate
+        # so reviewers can audit the math.
+        notes: List[str] = []
+        if ahb_disc > 0:
+            notes.append(f"AHB SQL: -{int(ahb_disc*100)}% on {tier_key.upper()} tier")
+        if ri_disc > 0:
+            notes.append(
+                f"SQL DB Reserved Capacity: -{int(ri_disc*100)}% "
+                f"({pricing_mode.upper()}); approximation per MS published "
+                f"discount ranges"
+            )
         out.append(BomLine(
             category="Data + Analytics",
-            resource=f"Azure SQL Database {cfg_label} × {vcores} vCores{zr_tag}{ahb_tag}",
+            resource=f"Azure SQL Database {cfg_label} × {vcores} vCores{zr_tag}{ahb_tag}{ri_tag}",
             sku=compute.sku_name or compute.product_name, meter=compute.meter_name,
             region=region, quantity=qty, unit="vCore-hours",
             unit_price=effective_rate,
             monthly_cost=round(effective_rate * qty, 2),
             currency=compute.currency_code,
-            source="retail-prices",
+            source="retail-prices" + (" + ri-approx" if ri_disc > 0 else ""),
             product_id=compute.product_id, sku_id=compute.sku_id, meter_id=compute.meter_id,
             service_name="Azure SQL Database",
             custom_name=f"{app_name}-SQLDB-{tier_key}" if app_name else f"SQLDB-{tier_key}",
+            billing_term=billing_lbl,
+            assumption=". ".join(notes),
         ))
     if storage_gb > 0:
         storage = _pick(
@@ -1234,6 +1266,7 @@ def build_bom(client, region: str, inputs: dict, app_name: str, pricing_mode: st
         zone_redundant=sql.get("zone_redundant", False),
         app_name=app_name,
         use_ahb_sql=bool(inputs.get("__use_ahb_sql__", False)),
+        pricing_mode=pricing_mode,
     ))
 
     adls = inputs.get("adls_gen2", {})
