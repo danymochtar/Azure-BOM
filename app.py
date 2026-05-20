@@ -87,160 +87,163 @@ _prefs = storage.load_prefs()
 _saved_api_key = storage.load_api_key()
 
 # ---------------- Sidebar: configuration + AI key ----------------
+# Grouped into three expanders so the sidebar fits one screen.
 with st.sidebar:
     st.header("Configuration")
-    app_name = st.text_input(
-        "Application / workload name",
-        value=_prefs.get("app_name", ""),
-        placeholder="e.g. ERPSuite, FraudAI",
-        help="Tagged into 'Custom name' for every BOM line.",
-    )
-    _default_region = _prefs.get("region") or DEFAULT_REGION
-    region = st.selectbox(
-        "Primary region",
-        AZURE_REGIONS,
-        index=AZURE_REGIONS.index(_default_region) if _default_region in AZURE_REGIONS else AZURE_REGIONS.index(DEFAULT_REGION),
-    )
-    _default_currency = _prefs.get("currency") or DEFAULT_CURRENCY
-    currency = st.selectbox(
-        "Currency",
-        CURRENCIES,
-        index=CURRENCIES.index(_default_currency) if _default_currency in CURRENCIES else CURRENCIES.index(DEFAULT_CURRENCY),
-    )
 
-    st.subheader("Billing term")
-    _bt_keys = list(BILLING_TERMS.keys())
-    _saved_bt = _prefs.get("pricing_mode", "payg")
-    _bt_idx = _bt_keys.index(_saved_bt) if _saved_bt in _bt_keys else 0
-    pricing_mode = st.radio(
-        "How compute is billed",
-        _bt_keys,
-        format_func=lambda k: BILLING_TERMS[k]["label"],
-        index=_bt_idx,
-        help=(
-            "Applied to VM compute only. RI = upfront prepay for 1 or 3 "
-            "years (biggest discount, least flexible). Savings Plan = "
-            "1/3-year hourly commitment (discount, more flexible — covers "
-            "any VM family). When a SKU has no RI/SP price in the region, "
-            "the line silently falls back to PAYG and a notice appears "
-            "after Generate."
-        ),
-    )
-    st.caption(
-        "**Azure cost-optimization guidance:** \n"
-        "• **Steady-state 24/7** workloads → RI 3Y (50-60% savings).  \n"
-        "• **Always-on but product direction uncertain** → SP 1Y or RI 1Y (30-40% savings).  \n"
-        "• **Spiky / seasonal** workloads → Pay-as-you-go.  \n"
-        "• **Experimental / short-term** → Pay-as-you-go."
-    )
+    # ===== 🛠 Workload =====
+    with st.expander("🛠 Workload", expanded=True):
+        app_name = st.text_input(
+            "Application / workload name",
+            value=_prefs.get("app_name", ""),
+            placeholder="e.g. ERPSuite, FraudAI",
+            help="Tagged into 'Custom name' for every BOM line.",
+        )
+        _default_region = _prefs.get("region") or DEFAULT_REGION
+        region = st.selectbox(
+            "Primary region",
+            AZURE_REGIONS,
+            index=AZURE_REGIONS.index(_default_region) if _default_region in AZURE_REGIONS else AZURE_REGIONS.index(DEFAULT_REGION),
+        )
+        _default_currency = _prefs.get("currency") or DEFAULT_CURRENCY
+        currency = st.selectbox(
+            "Currency",
+            CURRENCIES,
+            index=CURRENCIES.index(_default_currency) if _default_currency in CURRENCIES else CURRENCIES.index(DEFAULT_CURRENCY),
+        )
 
-    st.subheader("Azure Hybrid Benefit (BYOL with Software Assurance)")
-    use_ahb_windows = st.checkbox(
-        "Windows Server AHB (bring your own license)",
-        value=bool(_prefs.get("use_ahb_windows", False)),
-        help=(
-            "Applies to all Windows VMs + AKS Windows nodes + GPU VMs running Windows. "
-            "Swaps the Windows-VM price for the Linux-VM price of the same SKU "
-            "(~30-40% off a Windows VM). Requires existing Windows Server licenses "
-            "with active SA."
-        ),
-    )
-    use_ahb_sql = st.checkbox(
-        "SQL Server AHB for Azure SQL Database",
-        value=bool(_prefs.get("use_ahb_sql", False)),
-        help=(
-            "Applies a tier-based discount on Azure SQL DB compute: "
-            "~55% off General Purpose vCores, ~33% off Business Critical, "
-            "~25% off Hyperscale. Requires existing SQL Server licenses with SA."
-        ),
-    )
-
-    # ------------- Pricing diagnostic -------------
-    with st.expander("🔍 Diagnose billing-term availability", expanded=False):
+    # ===== 💰 Pricing =====
+    with st.expander("💰 Pricing", expanded=True):
+        _bt_keys = list(BILLING_TERMS.keys())
+        _saved_bt = _prefs.get("pricing_mode", "payg")
+        _bt_idx = _bt_keys.index(_saved_bt) if _saved_bt in _bt_keys else 0
+        pricing_mode = st.radio(
+            "Billing term",
+            _bt_keys,
+            format_func=lambda k: BILLING_TERMS[k]["label"],
+            index=_bt_idx,
+            help=(
+                "Applied to VM compute only. RI = upfront prepay for 1 or 3 "
+                "years (biggest discount, least flexible). Savings Plan = "
+                "1/3-year hourly commitment (discount, more flexible — covers "
+                "any VM family). When a SKU has no RI/SP price in the region, "
+                "the line silently falls back to PAYG and a notice appears "
+                "after Generate."
+            ),
+        )
         st.caption(
-            "Check whether the Azure Retail Prices API actually returns SP / RI "
-            "meters for a given VM SKU in your region. If any row shows "
-            "'(not found)', the app silently falls back to PAYG for that SKU."
+            "**Cost-optimisation guide:** \n"
+            "• Steady 24/7 → RI 3Y (50-60% off)  \n"
+            "• Uncertain → SP 1Y / RI 1Y (30-40% off)  \n"
+            "• Spiky / experimental → PAYG"
         )
-        diag_sku = st.text_input(
-            "ARM VM SKU to probe", value="Standard_D4s_v5",
-            key="diag_sku",
-            help="e.g. Standard_D4s_v5, Standard_E16s_v5, Standard_NC24ads_A100_v4",
+
+        st.markdown("**Azure Hybrid Benefit (BYOL + SA)**")
+        use_ahb_windows = st.checkbox(
+            "Windows Server AHB",
+            value=bool(_prefs.get("use_ahb_windows", False)),
+            help=(
+                "Applies to all Windows VMs + AKS Windows nodes + GPU VMs "
+                "running Windows. Swaps the Windows-VM price for the Linux-VM "
+                "price of the same SKU (~30-40% off a Windows VM). Requires "
+                "existing Windows Server licenses with active SA."
+            ),
         )
-        diag_os = st.selectbox("OS for the probe", ["Linux", "Windows"], key="diag_os")
-        if st.button("Probe retail prices for this SKU", key="diag_probe"):
-            try:
-                from src.pricing.retail import RetailPricesClient as _RPC, BILLING_TERMS as _BT
-                _c = _RPC(currency=currency)
-                diag_win = diag_os == "Windows"
-                rows = []
-                for mode_key, cfg in _BT.items():
-                    rec = _c.vm_price(diag_sku, region, os_is_windows=diag_win,
-                                      pricing_mode=mode_key, use_ahb=False)
-                    if rec is None:
-                        rows.append({
-                            "Mode": cfg["label"], "Status": "NOT FOUND",
-                            "Per-hour rate": "—", "Meter": "—",
-                            "Monthly (×730)": "$0.00",
-                        })
-                    else:
-                        # "Consumption" means we fell back to PAYG, NOT what user asked for
-                        actual = rec.price_type or "Consumption"
-                        status = "OK" if actual != "Consumption" or mode_key == "payg" else "FALLBACK → PAYG"
-                        rows.append({
-                            "Mode": cfg["label"], "Status": status,
-                            "Per-hour rate": f"${rec.retail_price:.4f}",
-                            "Meter": rec.meter_name[:60],
-                            "Monthly (×730)": f"${rec.retail_price * 730:.2f}",
-                        })
-                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-                if _c.fallbacks_used:
-                    st.info(f"Regional fallbacks used during probe: {sorted(_c.fallbacks_used)}")
-                if getattr(_c, "_last_error", None):
-                    st.warning(_c._last_error)
-            except Exception as e:
-                st.error(f"Probe failed: {type(e).__name__}: {e}")
+        use_ahb_sql = st.checkbox(
+            "SQL Server AHB (Azure SQL DB)",
+            value=bool(_prefs.get("use_ahb_sql", False)),
+            help=(
+                "Tier-based discount on Azure SQL DB compute: ~55% GP, "
+                "~33% BC, ~25% Hyperscale. Requires SQL Server licenses + SA."
+            ),
+        )
 
-    st.subheader("AI key")
-    _secrets_key = ""
-    try:
-        _secrets_key = st.secrets.get("ANTHROPIC_API_KEY", "")
-    except Exception:
-        pass
-    anthropic_key = st.text_input(
-        "Anthropic API key",
-        type="password",
-        value=_saved_api_key or _secrets_key,
-        help="Required for classification + AI extraction.",
-    )
-    remember_key = st.checkbox(
-        "Remember key in browser (convenience)",
-        value=bool(_saved_api_key),
-        help=(
-            "Stores the key in this browser's localStorage so you don't have to "
-            "paste it again. DO NOT enable on shared/public machines — the key "
-            "is readable via DevTools and any browser extension with page access."
-        ),
-    )
-    if remember_key and anthropic_key and anthropic_key != _saved_api_key:
-        storage.save_api_key(anthropic_key)
-    elif not remember_key and _saved_api_key:
-        storage.clear_api_key()
+        # Pricing diagnostic lives here — it's a pricing-side tool, not config.
+        with st.expander("🔍 Diagnose billing-term availability", expanded=False):
+            st.caption(
+                "Check whether the Azure Retail Prices API actually returns "
+                "SP / RI meters for a given VM SKU in your region. If any row "
+                "shows '(not found)', the app silently falls back to PAYG."
+            )
+            diag_sku = st.text_input(
+                "ARM VM SKU to probe", value="Standard_D4s_v5",
+                key="diag_sku",
+                help="e.g. Standard_D4s_v5, Standard_E16s_v5, Standard_NC24ads_A100_v4",
+            )
+            diag_os = st.selectbox("OS for the probe", ["Linux", "Windows"], key="diag_os")
+            if st.button("Probe retail prices for this SKU", key="diag_probe"):
+                try:
+                    from src.pricing.retail import RetailPricesClient as _RPC, BILLING_TERMS as _BT
+                    _c = _RPC(currency=currency)
+                    diag_win = diag_os == "Windows"
+                    rows = []
+                    for mode_key, cfg in _BT.items():
+                        rec = _c.vm_price(diag_sku, region, os_is_windows=diag_win,
+                                          pricing_mode=mode_key, use_ahb=False)
+                        if rec is None:
+                            rows.append({
+                                "Mode": cfg["label"], "Status": "NOT FOUND",
+                                "Per-hour rate": "—", "Meter": "—",
+                                "Monthly (×730)": "$0.00",
+                            })
+                        else:
+                            actual = rec.price_type or "Consumption"
+                            status = "OK" if actual != "Consumption" or mode_key == "payg" else "FALLBACK → PAYG"
+                            rows.append({
+                                "Mode": cfg["label"], "Status": status,
+                                "Per-hour rate": f"${rec.retail_price:.4f}",
+                                "Meter": rec.meter_name[:60],
+                                "Monthly (×730)": f"${rec.retail_price * 730:.2f}",
+                            })
+                    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                    if _c.fallbacks_used:
+                        st.info(f"Regional fallbacks used during probe: {sorted(_c.fallbacks_used)}")
+                    if getattr(_c, "_last_error", None):
+                        st.warning(_c._last_error)
+                except Exception as e:
+                    st.error(f"Probe failed: {type(e).__name__}: {e}")
 
-    st.warning(
-        "**Data egress notice:** when AI features are enabled, a preview of "
-        "your uploaded file (sheet names, headers, sample rows — or full "
-        "content for files ≤500 rows) is sent to Anthropic for classification "
-        "and extraction. Remove sensitive data (passwords, PII) before upload. "
-        "Anthropic does not train on API inputs per their terms."
-    )
+    # ===== ⚙ Advanced =====
+    with st.expander("⚙ Advanced", expanded=False):
+        st.markdown("**AI key**")
+        _secrets_key = ""
+        try:
+            _secrets_key = st.secrets.get("ANTHROPIC_API_KEY", "")
+        except Exception:
+            pass
+        anthropic_key = st.text_input(
+            "Anthropic API key",
+            type="password",
+            value=_saved_api_key or _secrets_key,
+            help="Required for classification + AI extraction.",
+        )
+        remember_key = st.checkbox(
+            "Remember key in browser (convenience)",
+            value=bool(_saved_api_key),
+            help=(
+                "Stores the key in this browser's localStorage so you don't have to "
+                "paste it again. DO NOT enable on shared/public machines — the key "
+                "is readable via DevTools and any browser extension with page access."
+            ),
+        )
+        if remember_key and anthropic_key and anthropic_key != _saved_api_key:
+            storage.save_api_key(anthropic_key)
+        elif not remember_key and _saved_api_key:
+            storage.clear_api_key()
 
-    with st.expander("📥 Pre-assessment templates", expanded=False):
+        st.warning(
+            "**Data egress:** when AI features are enabled, a preview of "
+            "your uploaded file (sheet names, headers, sample rows — or full "
+            "content for files ≤500 rows) is sent to Anthropic for "
+            "classification and extraction. Remove sensitive data (passwords, "
+            "PII) before upload. Anthropic does not train on API inputs."
+        )
+
+        st.markdown("**📥 Pre-assessment templates**")
         st.caption(
             "Optional Excel templates, one per pillar. The infra template is "
-            "**not strict** — you can upload any doc (RVTools, Azure Migrate, "
-            "PDF, etc.) and the app will extract what's there. Use templates "
-            "if you want a clean starting point."
+            "not strict — any doc format (RVTools, Azure Migrate, PDF, etc.) "
+            "still works."
         )
         from src.output.templates import TEMPLATE_REGISTRY
         for label, fname, builder in TEMPLATE_REGISTRY:
@@ -257,7 +260,7 @@ with st.sidebar:
                 key=f"tpl_{fname}",
             )
 
-    with st.expander("Browser storage", expanded=False):
+        st.markdown("**Browser storage**")
         st.caption(
             "Non-sensitive preferences (region, strategy, selected components, "
             "sizing sliders) are auto-saved to your browser so refreshes and "
@@ -449,9 +452,23 @@ auto_sim_enabled = st.checkbox(
 st.subheader("3. Pillar inputs")
 
 pillar_inputs: dict = {}
+# Default expansion rule: only the primary detected pillar is open. If the
+# upload classified as `mixed` / `unknown`, fall back to the first active
+# pillar in the multi-select. Everything else is collapsed; users click to
+# review. After Generate, the per-pillar subtotal is appended to the label.
+_primary_pk = profile.workload_type if profile.workload_type in PILLAR_META else (
+    active_pillars[0] if active_pillars else None
+)
+_pillar_totals = st.session_state.get("_pillar_totals", {})
+
 for pk in active_pillars:
     md = PILLAR_META[pk]
-    with st.expander(f"{md['icon']} {md['label']} — {md['description']}", expanded=True):
+    _total = _pillar_totals.get(pk)
+    if _total is not None:
+        _label = f"{md['icon']} {md['label']} — **${_total:,.2f}/mo**"
+    else:
+        _label = f"{md['icon']} {md['label']} — {md['description']}"
+    with st.expander(_label, expanded=(pk == _primary_pk)):
         merged_prefs = dict(_prefs)
 
         if auto_sim_enabled and not md["needs_vm_extraction"] and anthropic_key:
@@ -539,11 +556,12 @@ for pk, pin in pillar_inputs.items():
 
 # ---------------- Stage C: generate BOM (fan-out across active pillars) ----------------
 st.subheader("4. Generate assessment")
-if st.button("Run Azure Cost Assessment", type="primary"):
+if st.button("Generate BOM", type="primary"):
     with st.spinner("Pricing via Azure Retail Prices API…"):
         client = RetailPricesClient(currency=currency)
         all_lines: list = []
         mapping_rows: list = []
+        pillar_totals: dict = {}
         for pk in active_pillars:
             try:
                 pl_lines, pl_mapping = get_pillar(pk).build_bom(
@@ -558,6 +576,7 @@ if st.button("Run Azure Cost Assessment", type="primary"):
                 continue
             all_lines.extend(pl_lines)
             mapping_rows.extend(pl_mapping)
+            pillar_totals[pk] = round(sum(l.monthly_cost for l in pl_lines), 2)
 
     if getattr(client, "fallbacks_used", None):
         pairs = ", ".join(f"{p}→{f}" for p, f in sorted(client.fallbacks_used))
@@ -592,6 +611,7 @@ if st.button("Run Azure Cost Assessment", type="primary"):
         st.session_state["region"] = region
         st.session_state["currency"] = currency
         st.session_state["app_name"] = app_name
+        st.session_state["_pillar_totals"] = pillar_totals
 
         # Auto-save preferences to browser localStorage. Pull pillar-specific
         # widget state out of pillar_inputs where the lift-shift / security
@@ -636,6 +656,7 @@ if st.button("Run Azure Cost Assessment", type="primary"):
             "region": region,
             "currency": currency,
             "app_name": app_name,
+            "pillar_totals": pillar_totals,
         })
 
 # ---------------- Results ----------------
@@ -654,6 +675,7 @@ if "bom_lines" not in st.session_state:
             st.session_state["region"] = _last.get("region", "")
             st.session_state["currency"] = _last.get("currency", "USD")
             st.session_state["app_name"] = _last.get("app_name", "")
+            st.session_state["_pillar_totals"] = _last.get("pillar_totals", {}) or {}
             st.rerun()
 
 if "bom_lines" in st.session_state:
@@ -667,22 +689,14 @@ if "bom_lines" in st.session_state:
     df = pd.DataFrame([l.to_row() for l in lines])
     total_monthly = float(df["monthly_cost"].sum()) if not df.empty else 0.0
 
+    # ----- Top-of-results summary: metrics + download CTAs -----
+    # Surfaces totals + Excel / JSON downloads immediately under the
+    # heading so reviewers don't have to scroll past the chart + dataframe
+    # to find them.
     m1, m2, m3 = st.columns(3)
     m1.metric("Line items", len(df))
     m2.metric(f"Monthly ({currency})", f"{total_monthly:,.2f}")
     m3.metric(f"Annual ({currency})", f"{total_monthly * 12:,.2f}")
-
-    if not df.empty:
-        by_cat = (
-            df.groupby("category", as_index=False)["monthly_cost"].sum()
-            .sort_values("monthly_cost", ascending=False)
-        )
-        st.bar_chart(by_cat, x="category", y="monthly_cost")
-
-    with st.expander("All line items", expanded=True):
-        st.dataframe(df, use_container_width=True, hide_index=True)
-
-    st.subheader("6. Download")
 
     # Collect assessment-wide assumptions: missing-key-info defaults,
     # missing-DB-info stub, and any file-level merge notes.
@@ -703,32 +717,45 @@ if "bom_lines" in st.session_state:
             + " merged into a single inventory (dedup by VM name)."
         )
 
+    excel_bytes = build_excel_bom(
+        lines, mapping_rows, region, currency,
+        app_name=saved_app, global_assumptions=global_assumptions,
+    )
+    pc_json = build_pricing_calculator_import(lines, region, currency)
+    _fname = (saved_app or "assessment").replace(" ", "-")
     col_d1, col_d2 = st.columns(2)
     with col_d1:
-        excel_bytes = build_excel_bom(
-            lines, mapping_rows, region, currency,
-            app_name=saved_app, global_assumptions=global_assumptions,
-        )
-        _fname = (saved_app or "assessment").replace(" ", "-")
         st.download_button(
-            "Download Excel (Azure Pricing Calculator template)",
+            "📥 Download Excel (Pricing Calculator template)",
             excel_bytes,
             file_name=f"azure-{_fname}-{region}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+            use_container_width=True,
         )
     with col_d2:
-        pc_json = build_pricing_calculator_import(lines, region, currency)
         st.download_button(
-            "Download Pricing Calculator import (JSON)",
+            "📥 Download Pricing Calculator import (JSON)",
             pc_json,
             file_name=f"azure-{_fname}-{region}.json",
             mime="application/json",
+            use_container_width=True,
         )
+
+    if not df.empty:
+        by_cat = (
+            df.groupby("category", as_index=False)["monthly_cost"].sum()
+            .sort_values("monthly_cost", ascending=False)
+        )
+        st.bar_chart(by_cat, x="category", y="monthly_cost")
+
+    with st.expander("All line items", expanded=True):
+        st.dataframe(df, use_container_width=True, hide_index=True)
 
     # Token spend breakdown — per-process Claude API usage + USD cost
     usage_list = usage_tracker.get_usage()
     if usage_list:
-        st.subheader("7. AI token spend (this session)")
+        st.subheader("6. AI token spend (this session)")
         st.caption(
             "Per-process breakdown of Claude API usage. Input tokens = fresh "
             "prompt bytes (full-price). Cache read / write = prompt-caching "
