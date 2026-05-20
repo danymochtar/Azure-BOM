@@ -742,6 +742,12 @@ for pk in active_pillars:
                                     st.session_state.pop(k, None)
                             st.rerun()
 
+        # Mode-aware baseline defaults — fill empty fields per the user's
+        # global compute mode so the BOM is never empty even when auto-
+        # simulate was off. User picks in render_inputs override these.
+        from src.compute_mode import apply_baselines
+        merged_prefs = apply_baselines(pk, compute_mode, merged_prefs)
+
         pillar_inputs[pk] = get_pillar(pk).render_inputs(
             st, merged_prefs, app_name, region, upload_bytes, upload_name, profile,
         )

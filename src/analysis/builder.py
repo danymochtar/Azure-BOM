@@ -6,6 +6,7 @@ from typing import Dict, List, Tuple
 from ..models import BomLine, InventoryItem
 from ..mapper import recommend_vm, recommend_disk
 from ..mapper.sizer import os_is_windows
+from ..mapper.vm_catalog import VM_CATALOG, VmSku
 from ..pricing.retail import RetailPricesClient, HOURS_PER_MONTH
 
 
@@ -30,6 +31,64 @@ _PRICE_TYPE_TAG: dict = {
     "SavingsPlan":  None,   # use the user's chosen pricing_mode tag
     "Reservation":  None,   # same
 }
+
+
+def _general_purpose_alternative(burstable: VmSku) -> VmSku | None:
+    """Find the smallest D-series (general-purpose) SKU that matches or
+    exceeds the Burstable pick's vCPU + memory. Used by the cost-compare
+    safety net so we never pay more for B-series than we would for D
+    in the rare region where the published rates invert (typically
+    happens in Phase-2 / newly-announced regions where the B-series
+    meter hasn't been priced down yet)."""
+    candidates = [
+        s for s in VM_CATALOG
+        if s.family == "general"
+        and s.vcpu >= burstable.vcpu
+        and s.memory_gb >= burstable.memory_gb
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda s: (s.vcpu, s.memory_gb))
+    return candidates[0]
+
+
+def _cheaper_of(
+    client: RetailPricesClient,
+    primary: VmSku,
+    region: str,
+    win: bool,
+    pricing_mode: str,
+    use_ahb: bool,
+):
+    """Return (chosen_sku, chosen_price, swapped). If the primary pick is
+    Burstable AND its equivalent D-series is cheaper in this region for
+    the same OS + billing term, swap to D. Both prices are still fetched
+    so the caller sees the actual numbers."""
+    primary_price = client.vm_price(
+        primary.arm_name, region, os_is_windows=win,
+        pricing_mode=pricing_mode, use_ahb=use_ahb,
+    )
+    if primary.family != "burstable":
+        return primary, primary_price, False
+
+    alt = _general_purpose_alternative(primary)
+    if alt is None:
+        return primary, primary_price, False
+    alt_price = client.vm_price(
+        alt.arm_name, region, os_is_windows=win,
+        pricing_mode=pricing_mode, use_ahb=use_ahb,
+    )
+    # Swap only when we have valid prices on both sides AND D is strictly
+    # cheaper. Equal rates → stay on Burstable (user explicitly chose the
+    # saving mode for a reason).
+    if (
+        primary_price and alt_price
+        and alt_price.retail_price > 0
+        and primary_price.retail_price > 0
+        and alt_price.retail_price < primary_price.retail_price
+    ):
+        return alt, alt_price, True
+    return primary, primary_price, False
 
 
 def build_compute_bom(
@@ -97,10 +156,14 @@ def build_compute_bom(
             vm_custom = f"{names[0]}+{len(names)-1}-more"
         if app_name:
             vm_custom = f"{app_name}-{vm_custom}"
-        price = client.vm_price(
-            arm_name, region, os_is_windows=win,
-            pricing_mode=pricing_mode, use_ahb=use_ahb,
+        # Cost-compare safety net: if the sizer picked Burstable but the
+        # equivalent D-series is actually cheaper in this region for this
+        # OS + billing term, swap to D. `swapped=True` stamps an
+        # assumption note so reviewers see the substitution rationale.
+        sku, price, swapped = _cheaper_of(
+            client, sku, region, win, pricing_mode, use_ahb,
         )
+        arm_name = sku.arm_name
         # License tag — included in every compute row so the BOM makes the
         # licensing basis explicit (Azure cost standard). CRITICAL: read the
         # actual PriceRecord.price_type, not the user's requested
@@ -132,6 +195,11 @@ def build_compute_bom(
             ))
             continue
         qty_hours = grp["count"] * HOURS_PER_MONTH
+        swap_note = (
+            f"Cost-compare: Burstable was more expensive than D-series at "
+            f"this size in `{region}`; swapped to {sku.display} for savings."
+            if swapped else ""
+        )
         lines.append(BomLine(
             category="Compute",
             resource=f"Virtual Machine - {sku.display} ({os_label}){license_tag}",
@@ -150,6 +218,7 @@ def build_compute_bom(
             service_name="Virtual Machines",
             custom_name=vm_custom,
             resource_count=int(grp["count"]),
+            assumption=swap_note,
         ))
 
     # Price disks
