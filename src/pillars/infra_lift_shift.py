@@ -361,66 +361,82 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
                         lz_selected.append(comp.key)
 
             # ---- Derived-quantity sliders / inputs ----
+            # Each input is gated on its corresponding LZ component being
+            # ticked above. Untie that and the input disappears — no point
+            # asking for "Private Endpoint count" when private_endpoint
+            # isn't selected. Backup % is the only always-visible quantity
+            # since it's about VM disk backup, not an LZ line item.
+            _lz_set = set(lz_selected)
             st.markdown("**Quantities**")
             c1, c2 = st.columns(2)
             with c1:
                 backup_pct = st.slider("Azure Backup — % of total disk", 0, 200, backup_pct, 5)
-                la_mb_per_vm_per_day = st.number_input(
-                    "Log Analytics — MB/day per VM",
-                    min_value=0, max_value=5000, value=la_mb_per_vm_per_day, step=50,
-                )
-                bandwidth_gb = st.number_input(
-                    "Bandwidth egress — TOTAL GB/month (first 100 GB free; tiered)",
-                    min_value=0, max_value=10_000_000, value=bandwidth_gb, step=50,
-                    help=(
-                        "Total outbound data transfer per month. Azure applies "
-                        "tiered pricing: 0-10 TB full rate, 10-50 TB ~5% off, "
-                        "50-150 TB ~20% off, 150-500 TB ~45% off, 500+ TB ~55% off."
-                    ),
-                )
-                waf_capacity_units = st.number_input(
-                    "App Gateway WAF v2 — Capacity Units (avg)",
-                    min_value=0, max_value=125, value=int(prefs.get("waf_capacity_units", 2)), step=1,
-                    help=(
-                        "Azure Pricing Calculator bills WAF v2 on base instance "
-                        "hours PLUS Capacity Units. Typical: 2-4 CU."
-                    ),
-                )
-                firewall_gb = st.number_input(
-                    "Azure Firewall — data processed (GB/month)",
-                    min_value=0, max_value=10_000_000,
-                    value=int(prefs.get("firewall_gb_processed", 0)), step=100,
-                    help=(
-                        "Per-GB processed charge on top of the deployment hour. "
-                        "Leave 0 if the firewall only handles hub idle traffic."
-                    ),
-                )
+                if "log_analytics" in _lz_set:
+                    la_mb_per_vm_per_day = st.number_input(
+                        "Log Analytics — MB/day per VM",
+                        min_value=0, max_value=5000, value=la_mb_per_vm_per_day, step=50,
+                    )
+                if "bandwidth_egress" in _lz_set:
+                    bandwidth_gb = st.number_input(
+                        "Bandwidth egress — TOTAL GB/month (first 100 GB free; tiered)",
+                        min_value=0, max_value=10_000_000, value=bandwidth_gb, step=50,
+                        help=(
+                            "Total outbound data transfer per month. Azure applies "
+                            "tiered pricing: 0-10 TB full rate, 10-50 TB ~5% off, "
+                            "50-150 TB ~20% off, 150-500 TB ~45% off, 500+ TB ~55% off."
+                        ),
+                    )
+                if "app_gateway_waf" in _lz_set or "app_gateway_waf_cu" in _lz_set:
+                    waf_capacity_units = st.number_input(
+                        "App Gateway WAF v2 — Capacity Units (avg)",
+                        min_value=0, max_value=125, value=int(prefs.get("waf_capacity_units", 2)), step=1,
+                        help=(
+                            "Azure Pricing Calculator bills WAF v2 on base instance "
+                            "hours PLUS Capacity Units. Typical: 2-4 CU."
+                        ),
+                    )
+                if "firewall_data" in _lz_set or "firewall" in _lz_set or "firewall_premium" in _lz_set:
+                    firewall_gb = st.number_input(
+                        "Azure Firewall — data processed (GB/month)",
+                        min_value=0, max_value=10_000_000,
+                        value=int(prefs.get("firewall_gb_processed", 0)), step=100,
+                        help=(
+                            "Per-GB processed charge on top of the deployment hour. "
+                            "Leave 0 if the firewall only handles hub idle traffic."
+                        ),
+                    )
             with c2:
-                private_endpoint_count = st.number_input(
-                    "Private Endpoints — count",
-                    min_value=0, max_value=2000, value=private_endpoint_count, step=1,
-                    help="Each endpoint is billed at the per-hour rate × 730.",
-                )
-                vnet_peering_gb = st.number_input(
-                    "VNet peering — outbound GB/month",
-                    min_value=0, max_value=10_000_000, value=vnet_peering_gb, step=50,
-                )
-                nat_gateway_gb = st.number_input(
-                    "NAT Gateway — data processed GB/month",
-                    min_value=0, max_value=10_000_000, value=nat_gateway_gb, step=50,
-                )
-                automation_minutes = st.number_input(
-                    "Automation — runbook minutes/month (first 500 free)",
-                    min_value=0, max_value=200_000, value=automation_minutes, step=100,
-                )
-                app_insights_gb = st.number_input(
-                    "Application Insights — GB ingested/month (5 GB free)",
-                    min_value=0.0, max_value=50_000.0, value=float(app_insights_gb), step=1.0,
-                )
-                flow_logs_gb = st.number_input(
-                    "NSG Flow Logs — GB collected/month",
-                    min_value=0.0, max_value=50_000.0, value=float(flow_logs_gb), step=1.0,
-                )
+                if "private_endpoint" in _lz_set:
+                    private_endpoint_count = st.number_input(
+                        "Private Endpoints — count",
+                        min_value=0, max_value=2000, value=private_endpoint_count, step=1,
+                        help="Each endpoint is billed at the per-hour rate × 730.",
+                    )
+                if "vnet_peering_egress" in _lz_set:
+                    vnet_peering_gb = st.number_input(
+                        "VNet peering — outbound GB/month",
+                        min_value=0, max_value=10_000_000, value=vnet_peering_gb, step=50,
+                    )
+                if "nat_gateway_data" in _lz_set or "nat_gateway" in _lz_set:
+                    nat_gateway_gb = st.number_input(
+                        "NAT Gateway — data processed GB/month",
+                        min_value=0, max_value=10_000_000, value=nat_gateway_gb, step=50,
+                    )
+                if "automation_account" in _lz_set:
+                    automation_minutes = st.number_input(
+                        "Automation — runbook minutes/month (first 500 free)",
+                        min_value=0, max_value=200_000, value=automation_minutes, step=100,
+                    )
+                if "app_insights" in _lz_set:
+                    app_insights_gb = st.number_input(
+                        "Application Insights — GB ingested/month (5 GB free)",
+                        min_value=0.0, max_value=50_000.0, value=float(app_insights_gb), step=1.0,
+                    )
+                if "network_watcher_flow_logs" in _lz_set:
+                    flow_logs_gb = st.number_input(
+                        "NSG Flow Logs — GB collected/month",
+                        min_value=0.0, max_value=50_000.0, value=float(flow_logs_gb), step=1.0,
+                    )
 
     # ----- Exports for cross-pillar wiring -----
     vm_count = aggregate_vm_count(items) if items else 0

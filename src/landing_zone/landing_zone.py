@@ -606,11 +606,21 @@ LANDING_ZONE_COMPONENTS: List[LzComponent] = [
 
 
 # ---------------------------------------------------------------------------
-# CAF presets — one-click "Foundation / Standard / Enterprise" scaffolding.
-# Each preset is a superset of the previous one. Users can still toggle
-# individual checkboxes on top of a preset — the UI seeds session state
-# from the preset, then renders the widgets so manual overrides win.
+# CAF presets — one-click "Basic / Foundation / Standard / Enterprise"
+# scaffolding. Each preset is a superset of the previous one (except Basic,
+# which is a minimal web-only stack: public IP + App Gateway). Users can
+# still toggle individual checkboxes on top of a preset — the UI seeds
+# session state from the preset, then renders the widgets so manual
+# overrides win.
 # ---------------------------------------------------------------------------
+
+# Minimal "single web app" landing zone: just an ingress IP + App Gateway
+# (WAF v2) with its capacity-unit billing line. No firewall, no bastion,
+# no Log Analytics. Useful for a single-app cost line-up without the full
+# hub-and-spoke scaffolding.
+_LZ_BASIC = {
+    "public_ip", "app_gateway_waf", "app_gateway_waf_cu",
+}
 
 _LZ_FOUNDATION = {
     "public_ip", "firewall", "bastion", "nat_gateway",
@@ -635,6 +645,7 @@ _LZ_ENTERPRISE = _LZ_STANDARD | {
 
 LZ_PRESETS: dict = {
     "None":        set(),
+    "Basic":       set(_LZ_BASIC),
     "Foundation":  set(_LZ_FOUNDATION),
     "Standard":    set(_LZ_STANDARD),
     "Enterprise":  set(_LZ_ENTERPRISE),
