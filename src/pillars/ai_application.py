@@ -463,7 +463,10 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
 
     # -- Azure OpenAI --
     openai_usage: Dict[str, Dict[str, float]] = {}
-    sugg_oai = prefs.get("ai_openai_usage", {}) or {}
+    # Accept both the new `openai_usage` key (what Sonnet's schema + the
+    # compute_mode baseline write to) and the legacy `ai_openai_usage`
+    # alias for back-compat with saved prefs from older versions.
+    sugg_oai = (prefs.get("openai_usage") or prefs.get("ai_openai_usage") or {})
     with st.expander("Azure OpenAI — GPT-4.1 / 4o / o-series / embeddings", expanded=True):
         st.caption("Daily token volume per model, in 1K-token units.")
         for mk, model in AZURE_OPENAI_MODELS.items():
@@ -484,7 +487,7 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
 
     # -- Foundry models (MaaS) --
     foundry_usage: Dict[str, Dict[str, float]] = {}
-    sugg_foundry = prefs.get("ai_foundry_usage", {}) or {}
+    sugg_foundry = (prefs.get("foundry_usage") or prefs.get("ai_foundry_usage") or {})
     with st.expander("Azure AI Foundry — Llama / Mistral / DeepSeek / Phi", expanded=False):
         st.caption("Serverless Models-as-a-Service. Same unit convention (1K tokens/day).")
         for mk, model in AZURE_FOUNDRY_MODELS.items():
