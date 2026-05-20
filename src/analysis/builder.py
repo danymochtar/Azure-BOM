@@ -5,7 +5,7 @@ from typing import Dict, List, Tuple
 
 from ..models import BomLine, InventoryItem
 from ..mapper import recommend_vm, recommend_disk, recommend_disk_tier
-from ..mapper.sizer import os_is_windows
+from ..mapper.sizer import os_is_windows, is_non_prod
 from ..mapper.vm_catalog import VM_CATALOG, VmSku
 from ..pricing.retail import RetailPricesClient, HOURS_PER_MONTH
 
@@ -103,6 +103,7 @@ def build_compute_bom(
     use_ahb: bool = False,
     compute_mode: str = "normal",
     auto_disk_tier: bool = True,
+    non_prod_payg: bool = True,
 ) -> Tuple[List[BomLine], List[dict]]:
     """Return (bom lines, mapping_rows) where mapping_rows is a per-VM record
     showing source specs -> target Azure SKUs for UI display.
@@ -121,8 +122,19 @@ def build_compute_bom(
     for item in items:
         sku = recommend_vm(item, headroom=headroom, compute_mode=compute_mode)
         win = os_is_windows(item.os) if os_override == "as-detected" else (os_override == "Windows")
-        key = (sku.arm_name, win)
-        vm_groups.setdefault(key, {"sku": sku, "count": 0, "names": []})
+        # Per-VM billing term: non-prod VMs default to PAYG even when
+        # global pricing_mode is RI/SP (UAT / dev / staging usually
+        # doesn't run 24×7 — committing to RI is wasteful). Triggered
+        # by `non_prod_payg=True` + `is_non_prod(item)`.
+        item_billing = (
+            "payg"
+            if (non_prod_payg and pricing_mode != "payg" and is_non_prod(item))
+            else pricing_mode
+        )
+        # Group also keys on billing term so prod (RI) and non-prod
+        # (PAYG) of the same SKU appear as two distinct BOM lines.
+        key = (sku.arm_name, win, item_billing)
+        vm_groups.setdefault(key, {"sku": sku, "count": 0, "names": [], "billing": item_billing})
         vm_groups[key]["count"] += 1
         vm_groups[key]["names"].append(item.name)
 
@@ -155,7 +167,7 @@ def build_compute_bom(
         })
 
     # Price VMs
-    for (arm_name, win), grp in vm_groups.items():
+    for (arm_name, win, group_billing), grp in vm_groups.items():
         sku = grp["sku"]
         # Custom name = concatenated VM names (short) or "<app>-<sku>" fallback
         names = grp["names"]
@@ -172,17 +184,17 @@ def build_compute_bom(
         # OS + billing term, swap to D. `swapped=True` stamps an
         # assumption note so reviewers see the substitution rationale.
         sku, price, swapped = _cheaper_of(
-            client, sku, region, win, pricing_mode, use_ahb,
+            client, sku, region, win, group_billing, use_ahb,
         )
         arm_name = sku.arm_name
         # License tag — included in every compute row so the BOM makes the
         # licensing basis explicit (Azure cost standard). CRITICAL: read the
-        # actual PriceRecord.price_type, not the user's requested
-        # `pricing_mode`, so when vm_price fell back to PAYG (no SP/RI in
+        # actual PriceRecord.price_type, not the GROUP's requested
+        # `group_billing`, so when vm_price fell back to PAYG (no SP/RI in
         # this region for this SKU) the tag reflects reality.
         actual_price_type = getattr(price, "price_type", "") if price else ""
         if actual_price_type in ("SavingsPlan", "Reservation"):
-            term_tag = _BILLING_TAG.get(pricing_mode, "")
+            term_tag = _BILLING_TAG.get(group_billing, "")
         else:
             term_tag = ""   # fell back to PAYG; no SP/RI discount applied
         ahb_tag = " [AHB]" if (use_ahb and win) else ""

@@ -624,6 +624,7 @@ def build_bom(client, region: str, inputs: dict, app_name: str, pricing_mode: st
         app_name=app_name, pricing_mode=pricing_mode,
         use_ahb=bool(inputs.get("__use_ahb__", False)),
         compute_mode=str(inputs.get("__compute_mode__", "normal")),
+        non_prod_payg=bool(inputs.get("__non_prod_payg__", True)),
     )
 
     all_lines: List[BomLine] = []

@@ -118,121 +118,56 @@ with st.sidebar:
             index=CURRENCIES.index(_default_currency) if _default_currency in CURRENCIES else CURRENCIES.index(DEFAULT_CURRENCY),
         )
 
-    # ===== 💰 Pricing =====
-    with st.expander("💰 Pricing", expanded=True):
-        _bt_keys = list(BILLING_TERMS.keys())
-        _saved_bt = _prefs.get("pricing_mode", "payg")
-        _bt_idx = _bt_keys.index(_saved_bt) if _saved_bt in _bt_keys else 0
-        pricing_mode = st.radio(
-            "Billing term",
-            _bt_keys,
-            format_func=lambda k: BILLING_TERMS[k]["label"],
-            index=_bt_idx,
-            help=(
-                "Applied to VM compute only. RI = upfront prepay for 1 or 3 "
-                "years (biggest discount, least flexible). Savings Plan = "
-                "1/3-year hourly commitment (discount, more flexible — covers "
-                "any VM family). When a SKU has no RI/SP price in the region, "
-                "the line silently falls back to PAYG and a notice appears "
-                "after Generate."
-            ),
-        )
+    # ===== 🔧 Tools (sidebar) =====
+    # Billing term / compute mode / AHB used to live here as "Pricing"
+    # but they're now part of the post-Submit "Assessment context" panel
+    # (step 2) so reviewers see them next to the upload they apply to.
+    # The diagnostic probe stays in the sidebar since it's an
+    # independent investigation tool, not config.
+    with st.expander("🔧 Tools", expanded=False):
+        st.markdown("**🔍 Diagnose billing-term availability**")
         st.caption(
-            "**Cost-optimisation guide:** \n"
-            "• Steady 24/7 → RI 3Y (50-60% off)  \n"
-            "• Uncertain → SP 1Y / RI 1Y (30-40% off)  \n"
-            "• Spiky / experimental → PAYG"
+            "Check whether the Azure Retail Prices API actually returns "
+            "SP / RI meters for a given VM SKU in your region. If any row "
+            "shows '(not found)', the app silently falls back to PAYG."
         )
-
-        # Compute-mode selector — biases SKU/tier selection across every
-        # pillar (VM sizer, App Service, AKS, Azure SQL DB, etc.). Stored
-        # in session_state under key `compute_mode` so any pillar can
-        # read it without prop-drilling.
-        _cm_keys = list(COMPUTE_MODES.keys())
-        _saved_cm = _prefs.get("compute_mode") or DEFAULT_COMPUTE_MODE
-        _cm_idx = _cm_keys.index(_saved_cm) if _saved_cm in _cm_keys else _cm_keys.index(DEFAULT_COMPUTE_MODE)
-        compute_mode = st.radio(
-            "Compute mode (applies across pillars)",
-            _cm_keys,
-            format_func=lambda k: COMPUTE_MODES[k]["label"],
-            index=_cm_idx,
-            help=(
-                "Biases SKU/tier selection globally:\n"
-                "• Saving → Burstable VMs / Basic App Service / Serverless SQL\n"
-                "• Normal → D-series VMs / Premium v3 App Service / GP SQL\n"
-                "• High Performance → E/F-series VMs / P2v3+/Business Critical\n\n"
-                "Detection of non-prod (UAT/dev/test/staging/SIT/QA/preprod) "
-                "happens automatically — when Saving is on, those workloads "
-                "land on Burstable even if the doc didn't ask for it. You "
-                "can always override per-pillar inside each expander."
-            ),
+        diag_sku = st.text_input(
+            "ARM VM SKU to probe", value="Standard_D4s_v5",
+            key="diag_sku",
+            help="e.g. Standard_D4s_v5, Standard_E16s_v5, Standard_NC24ads_A100_v4",
         )
-        st.session_state["compute_mode"] = compute_mode
-
-        st.markdown("**Azure Hybrid Benefit (BYOL + SA)**")
-        use_ahb_windows = st.checkbox(
-            "Windows Server AHB",
-            value=bool(_prefs.get("use_ahb_windows", False)),
-            help=(
-                "Applies to all Windows VMs + AKS Windows nodes + GPU VMs "
-                "running Windows. Swaps the Windows-VM price for the Linux-VM "
-                "price of the same SKU (~30-40% off a Windows VM). Requires "
-                "existing Windows Server licenses with active SA."
-            ),
-        )
-        use_ahb_sql = st.checkbox(
-            "SQL Server AHB (Azure SQL DB)",
-            value=bool(_prefs.get("use_ahb_sql", False)),
-            help=(
-                "Tier-based discount on Azure SQL DB compute: ~55% GP, "
-                "~33% BC, ~25% Hyperscale. Requires SQL Server licenses + SA."
-            ),
-        )
-
-        # Pricing diagnostic lives here — it's a pricing-side tool, not config.
-        with st.expander("🔍 Diagnose billing-term availability", expanded=False):
-            st.caption(
-                "Check whether the Azure Retail Prices API actually returns "
-                "SP / RI meters for a given VM SKU in your region. If any row "
-                "shows '(not found)', the app silently falls back to PAYG."
-            )
-            diag_sku = st.text_input(
-                "ARM VM SKU to probe", value="Standard_D4s_v5",
-                key="diag_sku",
-                help="e.g. Standard_D4s_v5, Standard_E16s_v5, Standard_NC24ads_A100_v4",
-            )
-            diag_os = st.selectbox("OS for the probe", ["Linux", "Windows"], key="diag_os")
-            if st.button("Probe retail prices for this SKU", key="diag_probe"):
-                try:
-                    from src.pricing.retail import RetailPricesClient as _RPC, BILLING_TERMS as _BT
-                    _c = _RPC(currency=currency)
-                    diag_win = diag_os == "Windows"
-                    rows = []
-                    for mode_key, cfg in _BT.items():
-                        rec = _c.vm_price(diag_sku, region, os_is_windows=diag_win,
-                                          pricing_mode=mode_key, use_ahb=False)
-                        if rec is None:
-                            rows.append({
-                                "Mode": cfg["label"], "Status": "NOT FOUND",
-                                "Per-hour rate": "—", "Meter": "—",
-                                "Monthly (×730)": "$0.00",
-                            })
-                        else:
-                            actual = rec.price_type or "Consumption"
-                            status = "OK" if actual != "Consumption" or mode_key == "payg" else "FALLBACK → PAYG"
-                            rows.append({
-                                "Mode": cfg["label"], "Status": status,
-                                "Per-hour rate": f"${rec.retail_price:.4f}",
-                                "Meter": rec.meter_name[:60],
-                                "Monthly (×730)": f"${rec.retail_price * 730:.2f}",
-                            })
-                    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-                    if _c.fallbacks_used:
-                        st.info(f"Regional fallbacks used during probe: {sorted(_c.fallbacks_used)}")
-                    if getattr(_c, "_last_error", None):
-                        st.warning(_c._last_error)
-                except Exception as e:
-                    st.error(f"Probe failed: {type(e).__name__}: {e}")
+        diag_os = st.selectbox("OS for the probe", ["Linux", "Windows"], key="diag_os")
+        if st.button("Probe retail prices for this SKU", key="diag_probe"):
+            try:
+                from src.pricing.retail import RetailPricesClient as _RPC, BILLING_TERMS as _BT
+                _c = _RPC(currency=currency)
+                diag_win = diag_os == "Windows"
+                rows = []
+                for mode_key, cfg in _BT.items():
+                    rec = _c.vm_price(diag_sku, region, os_is_windows=diag_win,
+                                      pricing_mode=mode_key, use_ahb=False)
+                    if rec is None:
+                        rows.append({
+                            "Mode": cfg["label"], "Status": "NOT FOUND",
+                            "Per-hour rate": "—", "Meter": "—",
+                            "Monthly (×730)": "$0.00",
+                        })
+                    else:
+                        actual = rec.price_type or "Consumption"
+                        status = "OK" if actual != "Consumption" or mode_key == "payg" else "FALLBACK → PAYG"
+                        rows.append({
+                            "Mode": cfg["label"], "Status": status,
+                            "Per-hour rate": f"${rec.retail_price:.4f}",
+                            "Meter": rec.meter_name[:60],
+                            "Monthly (×730)": f"${rec.retail_price * 730:.2f}",
+                        })
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                if _c.fallbacks_used:
+                    st.info(f"Regional fallbacks used during probe: {sorted(_c.fallbacks_used)}")
+                if getattr(_c, "_last_error", None):
+                    st.warning(_c._last_error)
+            except Exception as e:
+                st.error(f"Probe failed: {type(e).__name__}: {e}")
 
     # ===== ⚙ Advanced =====
     with st.expander("⚙ Advanced", expanded=False):
@@ -429,8 +364,108 @@ if not uploads:
     )
     st.stop()
 
-# ---------------- Stage A: classify each file ----------------
-st.subheader("2. Workload classification")
+# ---------------- Step 2: Assessment context ----------------
+# Compute mode + billing term + AHB live here (post-upload, pre-
+# classification) because they shape how Sonnet auto-simulates the
+# pillars + how the BOM is priced. Putting them in the sidebar made
+# reviewers miss them and accept the defaults silently. Defaults are
+# Normal mode + PAYG so the BOM is conservative if untouched.
+st.subheader("2. Assessment context")
+st.caption(
+    "These defaults shape **every line** of the BOM. Compute mode biases "
+    "SKU / tier selection; billing term applies to VM compute (you can "
+    "still leave non-prod VMs on PAYG even when global is RI/SP)."
+)
+
+ac1, ac2 = st.columns([3, 2])
+with ac1:
+    # Compute mode — default `normal`. Per-pillar override available
+    # inside each pillar expander (rendered in step 4 below).
+    _cm_keys = list(COMPUTE_MODES.keys())
+    _saved_cm = _prefs.get("compute_mode") or DEFAULT_COMPUTE_MODE
+    _cm_idx = _cm_keys.index(_saved_cm) if _saved_cm in _cm_keys else _cm_keys.index(DEFAULT_COMPUTE_MODE)
+    compute_mode = st.radio(
+        "Compute mode (applies across pillars)",
+        _cm_keys,
+        format_func=lambda k: COMPUTE_MODES[k]["label"],
+        index=_cm_idx,
+        help=(
+            "Biases SKU/tier selection globally:\n"
+            "• Saving → Burstable VMs / Basic App Service / Serverless SQL\n"
+            "• Normal → D-series VMs / Premium v3 App Service / GP SQL (default)\n"
+            "• High Performance → E/F-series VMs / P2v3+/Business Critical\n\n"
+            "Non-prod (UAT/dev/test/staging/SIT/QA/preprod) detection "
+            "happens automatically — Saving mode routes those to "
+            "Burstable even when the doc didn't ask. Override per-"
+            "pillar inside each expander below."
+        ),
+    )
+    st.session_state["compute_mode"] = compute_mode
+
+with ac2:
+    _bt_keys = list(BILLING_TERMS.keys())
+    _saved_bt = _prefs.get("pricing_mode", "payg")
+    _bt_idx = _bt_keys.index(_saved_bt) if _saved_bt in _bt_keys else 0
+    pricing_mode = st.radio(
+        "Billing term (VM compute)",
+        _bt_keys,
+        format_func=lambda k: BILLING_TERMS[k]["label"],
+        index=_bt_idx,
+        help=(
+            "Sets the DEFAULT billing term for VM compute lines. "
+            "Non-prod VMs (UAT/dev/test/staging — detected from name + "
+            "environment tag) stay on PAYG even when global is RI/SP, "
+            "matching real-world deployments where staging only runs "
+            "a few hours per day. Toggle the 'Apply RI/SP to non-prod "
+            "too' checkbox below to force one term across the fleet."
+        ),
+    )
+    non_prod_payg = st.checkbox(
+        "🛡 Keep non-prod VMs on PAYG even when global is RI/SP",
+        value=bool(_prefs.get("non_prod_payg", True)),
+        help=(
+            "When on, VMs flagged as non-production (by name or "
+            "environment field) are priced at Pay-as-you-go even if "
+            "the global billing term is RI/SP. Matches the reality "
+            "that UAT/dev/staging often runs <24×7 and doesn't "
+            "justify a 1/3-year commitment. Off = treat every VM the "
+            "same."
+        ),
+        disabled=(pricing_mode == "payg"),
+    )
+
+st.caption(
+    "**Cost-optimisation guide:** \n"
+    "• Steady prod 24/7 → RI 3Y (50-60% off) — locked-in commitment\n"
+    "• Uncertain growth → SP 1Y / RI 1Y (30-40% off) — flexible\n"
+    "• Spiky / experimental / non-prod → PAYG"
+)
+
+st.markdown("**Azure Hybrid Benefit (BYOL + Software Assurance)**")
+ahb1, ahb2 = st.columns(2)
+with ahb1:
+    use_ahb_windows = st.checkbox(
+        "Windows Server AHB",
+        value=bool(_prefs.get("use_ahb_windows", False)),
+        help=(
+            "Applies to all Windows VMs + AKS Windows nodes + GPU VMs "
+            "running Windows. Swaps the Windows-VM price for the Linux-VM "
+            "price of the same SKU (~30-40% off a Windows VM). Requires "
+            "existing Windows Server licenses with active SA."
+        ),
+    )
+with ahb2:
+    use_ahb_sql = st.checkbox(
+        "SQL Server AHB (Azure SQL DB)",
+        value=bool(_prefs.get("use_ahb_sql", False)),
+        help=(
+            "Tier-based discount on Azure SQL DB compute: ~55% GP, "
+            "~33% BC, ~25% Hyperscale. Requires SQL Server licenses + SA."
+        ),
+    )
+
+# ---------------- Step 3: classify each file (was step 2) ----------------
+st.subheader("3. Workload classification")
 if not anthropic_key:
     st.error(
         "Anthropic API key required for classification. Paste one in the "
@@ -637,7 +672,7 @@ auto_sim_enabled = st.checkbox(
 )
 
 # ---------------- Stage B: per-pillar inputs ----------------
-st.subheader("3. Pillar inputs")
+st.subheader("4. Pillar inputs")
 
 pillar_inputs: dict = {}
 # Default expansion rule: only the primary detected pillar is open. If the
@@ -868,9 +903,10 @@ for pk, pin in pillar_inputs.items():
         continue
     pin["__use_ahb__"] = bool(use_ahb_windows)
     pin["__use_ahb_sql__"] = bool(use_ahb_sql)
+    pin["__non_prod_payg__"] = bool(non_prod_payg)
     # Effective compute mode = per-pillar override if set, else the
-    # sidebar's global mode. Lift-shift VM sizer reads this; other
-    # pillars use it via the apply_baselines helper.
+    # global mode. Lift-shift VM sizer reads this; other pillars use
+    # it via the apply_baselines helper.
     _global_cm = str(st.session_state.get("compute_mode", DEFAULT_COMPUTE_MODE))
     _pillar_override = st.session_state.get(f"_cm_override::{pk}", "(use global)")
     pin["__compute_mode__"] = (
@@ -878,7 +914,7 @@ for pk, pin in pillar_inputs.items():
     )
 
 # ---------------- Stage C: generate BOM (fan-out across active pillars) ----------------
-st.subheader("4. Generate assessment")
+st.subheader("5. Generate assessment")
 
 # Auto-fire Generate on the first render of a fresh (upload × pillars × auto-sim)
 # combo so non-lift-shift pillars produce a "v1 BOM" immediately from the
@@ -975,6 +1011,7 @@ if _btn_clicked or _should_auto_generate:
             "compute_mode": compute_mode,
             "use_ahb_windows": use_ahb_windows,
             "use_ahb_sql": use_ahb_sql,
+            "non_prod_payg": non_prod_payg,
             "active_pillars": active_pillars,
             "strategy_key": ls_in.get("strategy_key", "iaas"),
             "include_lz": ls_in.get("include_lz", True),
@@ -1037,7 +1074,7 @@ if "bom_lines" in st.session_state:
     currency = st.session_state["currency"]
     saved_app = st.session_state.get("app_name", "")
 
-    st.subheader("5. Results")
+    st.subheader("6. Results")
     df = pd.DataFrame([l.to_row() for l in lines])
     total_monthly = float(df["monthly_cost"].sum()) if not df.empty else 0.0
 
@@ -1154,7 +1191,7 @@ if "bom_lines" in st.session_state:
     # Token spend breakdown — per-process Claude API usage + USD cost
     usage_list = usage_tracker.get_usage()
     if usage_list:
-        st.subheader("6. AI token spend (this session)")
+        st.subheader("7. AI token spend (this session)")
         st.caption(
             "Per-process breakdown of Claude API usage. Input tokens = fresh "
             "prompt bytes (full-price). Cache read / write = prompt-caching "
