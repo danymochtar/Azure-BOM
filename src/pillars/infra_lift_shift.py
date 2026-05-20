@@ -337,8 +337,14 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
                 return st.session_state.get(f"ls_lz_{comp_key}", comp_key in saved_lz)
 
             # ---- Category-grouped checkbox grid ----
+            # Skip `derived` components (e.g. App Gateway CU-hours, Firewall
+            # data-processed GB, NAT data-processed GB) — they bill alongside
+            # their parent and shouldn't appear as separate checkboxes. The
+            # bill builder auto-adds them based on quantity inputs.
             comps_by_cat: dict = {}
             for comp in LANDING_ZONE_COMPONENTS:
+                if comp.derived:
+                    continue
                 comps_by_cat.setdefault(comp.category, []).append(comp)
 
             for cat in LZ_CATEGORY_ORDER:
@@ -528,12 +534,19 @@ def build_bom(client, region: str, inputs: dict, app_name: str, pricing_mode: st
     auto_enabled = list(inputs.get("lz_selected") or [])
     if "recovery_vault" in auto_enabled and "recovery_vault_instances" not in auto_enabled and vm_count > 0:
         auto_enabled.append("recovery_vault_instances")
+    # `app_gateway_waf_cu`, `firewall_data`, `nat_gateway_data` are `derived`
+    # components — no separate checkbox. They auto-attach to their parent
+    # whenever the parent is ticked AND the relevant Quantities input > 0.
     if "app_gateway_waf" in auto_enabled and inputs.get("waf_capacity_units", 0) > 0 \
             and "app_gateway_waf_cu" not in auto_enabled:
         auto_enabled.append("app_gateway_waf_cu")
-    if "firewall" in auto_enabled and inputs.get("firewall_gb_processed", 0) > 0 \
+    if ("firewall" in auto_enabled or "firewall_premium" in auto_enabled) \
+            and inputs.get("firewall_gb_processed", 0) > 0 \
             and "firewall_data" not in auto_enabled:
         auto_enabled.append("firewall_data")
+    if "nat_gateway" in auto_enabled and inputs.get("nat_gateway_gb", 0) > 0 \
+            and "nat_gateway_data" not in auto_enabled:
+        auto_enabled.append("nat_gateway_data")
     # Don't cost a $0 per-endpoint-hour line when the count is 0
     if "private_endpoint" in auto_enabled and inputs.get("private_endpoint_count", 0) <= 0:
         auto_enabled = [k for k in auto_enabled if k != "private_endpoint"]

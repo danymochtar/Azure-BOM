@@ -36,6 +36,13 @@ class LzComponent:
     # Optional post-filter to pick the right record from multiple returned
     pick: Optional[Callable[[List[PriceRecord]], Optional[PriceRecord]]] = None
     notes: str = ""
+    # When True, this line is auto-added by the bill builder whenever its
+    # parent component is selected AND the relevant quantity input > 0.
+    # Hidden from the LZ checkbox grid so users don't see "two checkboxes
+    # for the same service". App Gateway v2 CU hours, Azure Firewall data
+    # processed, NAT Gateway data processed all bill alongside their parent
+    # — exposing them as separate ticks is confusing.
+    derived: bool = False
 
 
 def _cheapest(records: List[PriceRecord]) -> Optional[PriceRecord]:
@@ -171,7 +178,7 @@ LANDING_ZONE_COMPONENTS: List[LzComponent] = [
     LzComponent(
         key="app_gateway_waf",
         category="Connectivity",
-        resource="Application Gateway WAF v2 (1 instance)",
+        resource="Application Gateway WAF v2 (base + CU)",
         default_enabled=False,
         quantity=HOURS_PER_MONTH,
         unit="hours",
@@ -181,9 +188,10 @@ LANDING_ZONE_COMPONENTS: List[LzComponent] = [
         ),
         pick=_contains_all("waf v2", "gateway"),
         notes=(
-            "Azure Application Gateway v2 with Web Application Firewall (WAF). "
-            "Layer-7 reverse proxy + OWASP rules. Capacity Units are billed "
-            "separately based on throughput; 1 CU baseline assumed here."
+            "Azure App Gateway v2 (WAF). Layer-7 reverse proxy + OWASP rules. "
+            "Azure bills this on TWO meters: base gateway-hours + Capacity-Unit "
+            "hours. Ticking this enables both; CU count comes from the "
+            "Quantities input below (default 2 CU)."
         ),
     ),
     LzComponent(
@@ -306,10 +314,14 @@ LANDING_ZONE_COMPONENTS: List[LzComponent] = [
         ),
         pick=_contains_all("waf v2", "capacity unit"),
         notes=(
-            "CU scales with throughput — typical WAF v2 runs 2-4 CU. Default "
-            "quantity = 2 CU × 730 hours. Raise in the sidebar for heavier "
-            "workloads."
+            "Auto-billed alongside `app_gateway_waf` — Azure pricing model "
+            "couples base gateway-hours with CU-hours; you can't deploy v2 "
+            "without CU. CU count is the 'App Gateway WAF v2 — Capacity Units' "
+            "input under Quantities."
         ),
+        # Hidden from the LZ checkbox grid — added automatically by the
+        # bill builder when `app_gateway_waf` is on AND CU > 0.
+        derived=True,
     ),
     LzComponent(
         key="firewall_data",
@@ -324,10 +336,12 @@ LANDING_ZONE_COMPONENTS: List[LzComponent] = [
         ),
         pick=_contains_all("standard", "data processed"),
         notes=(
-            "Per-GB processed charge on top of the Azure Firewall deployment "
-            "hour. Enter expected monthly GB through the firewall. 0 = don't "
-            "bill (useful if the firewall only sees idle hub traffic)."
+            "Auto-billed alongside `firewall` / `firewall_premium`. Per-GB "
+            "processed charge on top of the firewall deployment hour. "
+            "GB count comes from the 'Azure Firewall — data processed' "
+            "input under Quantities."
         ),
+        derived=True,
     ),
     # -----------------------------------------------------------------------
     # CAF additions — Connectivity (edge + DDoS + private networking)
@@ -455,9 +469,11 @@ LANDING_ZONE_COMPONENTS: List[LzComponent] = [
         ),
         pick=_contains("data processed"),
         notes=(
-            "~$0.045/GB processed on top of the NAT Gateway hourly charge. "
-            "Raise the LZ 'NAT Gateway data' slider for production egress."
+            "Auto-billed alongside `nat_gateway`. ~$0.045/GB processed on top "
+            "of the NAT Gateway hourly charge. GB count comes from the "
+            "'NAT Gateway data processed' input under Quantities."
         ),
+        derived=True,
     ),
     LzComponent(
         key="firewall_premium",
@@ -615,11 +631,11 @@ LANDING_ZONE_COMPONENTS: List[LzComponent] = [
 # ---------------------------------------------------------------------------
 
 # Minimal "single web app" landing zone: just an ingress IP + App Gateway
-# (WAF v2) with its capacity-unit billing line. No firewall, no bastion,
-# no Log Analytics. Useful for a single-app cost line-up without the full
-# hub-and-spoke scaffolding.
+# (WAF v2). No firewall, no bastion, no Log Analytics. Useful for a
+# single-app cost line-up without the full hub-and-spoke scaffolding. CU
+# billing is auto-attached by the bill builder (it's a `derived` line).
 _LZ_BASIC = {
-    "public_ip", "app_gateway_waf", "app_gateway_waf_cu",
+    "public_ip", "app_gateway_waf",
 }
 
 _LZ_FOUNDATION = {
@@ -636,11 +652,13 @@ _LZ_STANDARD = _LZ_FOUNDATION | {
 
 _LZ_ENTERPRISE = _LZ_STANDARD | {
     "ddos_network_protection", "front_door_premium", "firewall_premium",
-    "private_dns_resolver", "vnet_peering_egress", "nat_gateway_data",
+    "private_dns_resolver", "vnet_peering_egress",
     "expressroute_circuit", "expressroute_gateway",
     "entra_domain_services", "acr_premium",
-    "app_gateway_waf", "app_gateway_waf_cu", "vpn_gw",
-    "firewall_data",
+    "app_gateway_waf", "vpn_gw",
+    # `app_gateway_waf_cu`, `firewall_data`, `nat_gateway_data` are derived
+    # and auto-attached by the builder when their parent is on AND the
+    # relevant Quantities input is > 0. Don't list them here.
 }
 
 LZ_PRESETS: dict = {
