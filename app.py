@@ -737,6 +737,22 @@ for pk in active_pillars:
                     st.session_state.pop(sim_cache_key, None)
                     st.rerun()
 
+                # Collect this pillar's assumptions into a session-level
+                # log so the Results section can surface a single
+                # "BOM is assumption-based, fine-tune for accuracy"
+                # warning across every pillar at once.
+                _alog = st.session_state.setdefault("_assumption_log", {})
+                _pillar_notes: list = []
+                for a in (sim.assumptions or []):
+                    _pillar_notes.append(a)
+                # Pair each prefilled answer with its question so the
+                # reviewer sees the assumed answer alongside the question.
+                _pfa = list(sim.prefilled_answers or [])
+                for i, q in enumerate(sim.open_questions or []):
+                    if i < len(_pfa) and _pfa[i].strip():
+                        _pillar_notes.append(f"_(Q)_ {q} → _(A)_ {_pfa[i]}")
+                _alog[pk] = _pillar_notes
+
                 if sim.assumptions:
                     with st.expander("🧮 Assumptions used", expanded=False):
                         for a in sim.assumptions:
@@ -791,6 +807,21 @@ for pk in active_pillars:
             upload_name,
             getattr(profile, "summary", ""),
         )
+
+        # Append baseline-derived notes (e.g. Fabric Capacity Estimator
+        # rationale) to the pillar's assumption log. This makes "we
+        # assumed F8 because data ≈ 100 GB/day + DF + 50 PBI users"
+        # visible in the top-of-Results warning.
+        _alog = st.session_state.setdefault("_assumption_log", {})
+        _alog.setdefault(pk, [])
+        _fab_rationale = merged_prefs.pop("__fabric_estimator_rationale__", "")
+        if _fab_rationale:
+            _alog[pk].append(_fab_rationale)
+        if effective_mode != compute_mode:
+            _alog[pk].append(
+                f"Compute mode override: this pillar uses **{effective_mode}** "
+                f"(global is **{compute_mode}**)."
+            )
 
         pillar_inputs[pk] = get_pillar(pk).render_inputs(
             st, merged_prefs, app_name, region, upload_bytes, upload_name, profile,
@@ -980,6 +1011,34 @@ if "bom_lines" in st.session_state:
     st.subheader("5. Results")
     df = pd.DataFrame([l.to_row() for l in lines])
     total_monthly = float(df["monthly_cost"].sum()) if not df.empty else 0.0
+
+    # ----- Assumption-based BOM warning -----
+    # Surface a prominent banner whenever the numbers were shaped by
+    # auto-simulated assumptions (Sonnet best-guesses, mode-based
+    # baseline seeds, Fabric Capacity Estimator picks, etc.) so the
+    # reviewer knows to fine-tune via the pillar widgets above and
+    # click Re-generate before quoting the totals.
+    _alog = st.session_state.get("_assumption_log", {}) or {}
+    _flat_assumptions: list = []
+    for _pk, _items in _alog.items():
+        _label = PILLAR_META.get(_pk, {}).get("label", _pk)
+        for _it in _items:
+            _flat_assumptions.append((_label, _it))
+    if _flat_assumptions:
+        st.warning(
+            f"⚠ **This BOM was built from {len(_flat_assumptions)} assumed values "
+            f"— review and fine-tune for accuracy before quoting.** The numbers "
+            f"below are a defensible first-pass estimate, not a contractual "
+            f"figure. Adjust the inputs in the pillar expanders above and click "
+            f"**🔁 Re-generate BOM** to refresh."
+        )
+        with st.expander(
+            f"📋 Assumption details ({len(_flat_assumptions)} item"
+            f"{'s' if len(_flat_assumptions) != 1 else ''})",
+            expanded=True,
+        ):
+            for _label, _it in _flat_assumptions:
+                st.markdown(f"- **[{_label}]** {_it}")
 
     # ----- Top-of-results summary: metrics + download CTAs -----
     # Surfaces totals + Excel / JSON downloads immediately under the
