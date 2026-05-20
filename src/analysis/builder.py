@@ -25,6 +25,18 @@ _BILLING_TAG: dict = {
     "ri_3y": " [RI 3Y]",
 }
 
+# Friendly label written into BomLine.billing_term (its own column in
+# the Results table). When the retail feed falls back to PAYG for an
+# SKU that lacked SP/RI in the region, we stamp "PAYG (fallback)" so
+# reviewers can spot the silent downgrade.
+_BILLING_LABEL: dict = {
+    "payg":  "PAYG",
+    "sp_1y": "SP 1Y",
+    "sp_3y": "SP 3Y",
+    "ri_1y": "RI 1Y",
+    "ri_3y": "RI 3Y",
+}
+
 # Map what the PriceRecord.price_type says back to a tag. When vm_price
 # falls back to PAYG (because the SKU lacks an SP/RI record in the region),
 # the returned record's price_type is "Consumption" — we must NOT tag it as
@@ -212,8 +224,17 @@ def build_compute_bom(
         actual_price_type = getattr(price, "price_type", "") if price else ""
         if actual_price_type in ("SavingsPlan", "Reservation"):
             term_tag = _BILLING_TAG.get(group_billing, "")
+            billing_label = _BILLING_LABEL.get(group_billing, "PAYG")
         else:
             term_tag = ""   # fell back to PAYG; no SP/RI discount applied
+            # If the user asked for SP/RI but the SKU has no such meter
+            # in this region, mark the line "PAYG (fallback)" so the
+            # billing column makes the silent downgrade visible.
+            billing_label = (
+                "PAYG"
+                if group_billing == "payg"
+                else f"PAYG (fallback from {_BILLING_LABEL.get(group_billing, group_billing)})"
+            )
         ahb_tag = " [AHB]" if (use_ahb and win) else ""
         license_tag = f"{term_tag}{ahb_tag}"
         os_label = "Windows" + (" / AHB BYOL" if use_ahb and win else "") if win else "Linux"
@@ -232,6 +253,7 @@ def build_compute_bom(
                 service_name="Virtual Machines",
                 custom_name=vm_custom,
                 resource_count=int(grp["count"]),
+                billing_term=billing_label,
             ))
             continue
         qty_hours = grp["count"] * HOURS_PER_MONTH
@@ -259,6 +281,7 @@ def build_compute_bom(
             custom_name=vm_custom,
             resource_count=int(grp["count"]),
             assumption=swap_note,
+            billing_term=billing_label,
         ))
 
         # SQL Server VM license line — only when VM is detected as
@@ -288,6 +311,7 @@ def build_compute_bom(
                 service_name="SQL Server on Azure VMs",
                 custom_name=f"{vm_custom}-SQLSvr-Std",
                 resource_count=int(grp["count"]),
+                billing_term="PAYG (SQL license)",
                 assumption=(
                     f"SQL Server VM license auto-added: detected `sql`/`mssql` "
                     f"in {grp['count']} VM name(s). Standard edition PAYG "

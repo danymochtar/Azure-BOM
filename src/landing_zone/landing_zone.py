@@ -195,7 +195,22 @@ LANDING_ZONE_COMPONENTS: List[LzComponent] = [
             f"serviceName eq 'Application Gateway' and armRegionName eq '{region}' "
             f"and priceType eq 'Consumption'"
         ),
-        pick=_contains_all("waf v2", "gateway"),
+        # The retail feed has TWO "WAF v2" meters per region — base
+        # gateway-hour ($0.443/hr) and Capacity-Unit hour ($0.0144/hr).
+        # Plain `_contains_all("waf v2", "gateway")` matches both and
+        # _cheapest then picks the CU meter (way cheaper) for the base
+        # — silently underbilling by ~$320/mo per gateway. Anchor the
+        # base picker on "v2" + "gateway" AND explicitly exclude
+        # "capacity unit" / "data" meters.
+        pick=lambda records: _cheapest([
+            r for r in records
+            if "waf v2" in r.meter_name.lower()
+            and "gateway" in r.meter_name.lower()
+            and "capacity unit" not in r.meter_name.lower()
+            and "data" not in r.meter_name.lower()
+        ]) or _cheapest([
+            r for r in records if "waf v2" in r.meter_name.lower()
+        ]),
         notes=(
             "Azure App Gateway v2 (WAF). Layer-7 reverse proxy + OWASP rules. "
             "Azure bills this on TWO meters: base gateway-hours + Capacity-Unit "
@@ -753,10 +768,15 @@ def build_landing_zone_bom(
                 static = vpn_sku_to_static_rate(_sku_pick)
             if static:
                 monthly = static.per_unit_per_month_usd * qty
+                _static_resource = (
+                    f"VPN Gateway ({_sku_pick}) (static reference)"
+                    if (comp.key == "vpn_gw" and _sku_pick)
+                    else f"{comp.resource} (static reference)"
+                )
                 lines.append(
                     BomLine(
                         category=comp.category,
-                        resource=f"{comp.resource} (static reference)",
+                        resource=_static_resource,
                         sku=comp.key,
                         meter=f"Static reference ({_LZ_STATIC_DATE})",
                         region=region,
@@ -833,6 +853,11 @@ def build_landing_zone_bom(
         resource_label = comp.resource
         if comp.key in ("log_analytics", "recovery_vault", "bandwidth_egress"):
             resource_label = f"{comp.resource} (~{qty:,.1f} {comp.unit}/mo)"
+        # For SKU-overridden lines (VPN Gateway), the static resource
+        # string says "VpnGw1" but the user / preset may have picked a
+        # different SKU. Rewrite the label to match the actual SKU.
+        if comp.key == "vpn_gw" and _sku_pick:
+            resource_label = f"VPN Gateway ({_sku_pick})"
         lines.append(
             BomLine(
                 category=comp.category,

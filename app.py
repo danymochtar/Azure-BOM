@@ -137,11 +137,13 @@ with st.sidebar:
             index=AZURE_REGIONS.index(_default_region) if _default_region in AZURE_REGIONS else AZURE_REGIONS.index(DEFAULT_REGION),
             format_func=region_label,
         )
-        _default_currency = _prefs.get("currency") or DEFAULT_CURRENCY
-        currency = st.selectbox(
-            "Currency",
-            CURRENCIES,
-            index=CURRENCIES.index(_default_currency) if _default_currency in CURRENCIES else CURRENCIES.index(DEFAULT_CURRENCY),
+        # Currency hard-locked to USD — Retail Prices API returns USD
+        # natively and the static reference rates were captured in USD.
+        # Showing a selectbox suggests we can convert, which we can't.
+        currency = "USD"
+        st.text_input(
+            "Currency", value="USD", disabled=True,
+            help="Locked to USD — Retail Prices API + static references are USD-native.",
         )
 
     # ===== 🔧 Tools (sidebar) =====
@@ -1203,15 +1205,30 @@ if "bom_lines" in st.session_state:
             else ["product_id", "sku_id", "meter_id", "source"]
         )
         _display_df = df.drop(columns=[c for c in _hide_cols if c in df.columns])
-        # Surface `resource_count` right after `resource` and rename it
-        # to "#" so reviewers see the instance count next to the SKU
-        # instead of having to parse "x4" out of the resource string.
+
+        # Friendly region label in the table (e.g. "Malaysia West"
+        # instead of "malaysiawest"). The underlying ARM code stays
+        # in `df["region"]` for Excel / JSON export; only the visible
+        # column is humanized.
+        if "region" in _display_df.columns:
+            _display_df = _display_df.copy()
+            _display_df["region"] = _display_df["region"].map(
+                lambda r: region_label(r).split(" — ")[-1] if r else r
+            )
+
+        # Column ordering: resource → # → billing_term → sku → meter → region → ...
         if "resource_count" in _display_df.columns:
             cols = list(_display_df.columns)
             cols.remove("resource_count")
             insert_at = cols.index("resource") + 1 if "resource" in cols else 0
             cols.insert(insert_at, "resource_count")
             _display_df = _display_df[cols].rename(columns={"resource_count": "#"})
+        if "billing_term" in _display_df.columns:
+            cols = list(_display_df.columns)
+            cols.remove("billing_term")
+            insert_at = (cols.index("#") + 1) if "#" in cols else 0
+            cols.insert(insert_at, "billing_term")
+            _display_df = _display_df[cols].rename(columns={"billing_term": "billing"})
         st.dataframe(_display_df, use_container_width=True, hide_index=True)
 
     # Token spend breakdown — per-process Claude API usage + USD cost

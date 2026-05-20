@@ -40,6 +40,11 @@ class BomLine:
     # analytics, key vault, etc.). The `quantity` column is still the
     # per-resource usage figure (730 hours, 100 GB, etc.).
     resource_count: int = 1
+    # Friendly billing-term label rendered as its own column in the
+    # Results table — "PAYG" / "SP 1Y" / "SP 3Y" / "RI 1Y" / "RI 3Y".
+    # Defaults to empty for non-compute lines (storage, networking,
+    # SaaS) where the concept doesn't apply.
+    billing_term: str = "PAYG"
     # Audit trail — written to the Cost Assumptions sheet of the exported
     # Excel. Builders with rich context (AHB %, tiered bandwidth, SQL DB
     # discount, Fabric rationale, static DevTools rate, multi-file merge
