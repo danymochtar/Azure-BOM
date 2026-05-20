@@ -233,37 +233,11 @@ with st.sidebar:
             "PII) before upload. Anthropic does not train on API inputs."
         )
 
-        st.markdown("**📥 Pre-assessment templates**")
-        st.caption(
-            "Optional Excel templates, one per pillar. The infra template is "
-            "not strict — any doc format (RVTools, Azure Migrate, PDF, etc.) "
-            "still works."
-        )
-        from src.output.templates import TEMPLATE_REGISTRY
-        _tpl_labels = [t[0] for t in TEMPLATE_REGISTRY]
-        _tpl_choice = st.selectbox(
-            "Template", _tpl_labels, key="tpl_choice",
-            label_visibility="collapsed",
-        )
-        _tpl_match = next(
-            ((label, fname, builder) for (label, fname, builder)
-             in TEMPLATE_REGISTRY if label == _tpl_choice),
-            None,
-        )
-        if _tpl_match:
-            _lbl, _fname, _builder = _tpl_match
-            try:
-                _blob = _builder()
-                st.download_button(
-                    label=f"⬇ Download `{_fname}`",
-                    data=_blob,
-                    file_name=_fname,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key=f"tpl_dl_{_fname}",
-                    use_container_width=True,
-                )
-            except Exception as te:
-                st.warning(f"Could not build {_lbl}: {te}")
+        # Pre-assessment templates removed from the sidebar — they
+        # added noise and the upload step accepts any doc format
+        # (RVTools / Azure Migrate / PDF / freeform paste). The
+        # template builders in src/output/templates.py are kept for
+        # users who want to download via the API / script.
 
         st.markdown("**Browser storage**")
         st.caption(
@@ -1182,26 +1156,31 @@ if "bom_lines" in st.session_state:
     # reviewer knows to fine-tune via the pillar widgets above and
     # click Re-generate before quoting the totals.
     _alog = st.session_state.get("_assumption_log", {}) or {}
-    _flat_assumptions: list = []
-    for _pk, _items in _alog.items():
-        _label = PILLAR_META.get(_pk, {}).get("label", _pk)
-        for _it in _items:
-            _flat_assumptions.append((_label, _it))
-    if _flat_assumptions:
+    # Drop empty pillars from the log so we don't render empty groups.
+    _alog_grouped = {pk: items for pk, items in _alog.items() if items}
+    _total_assumptions = sum(len(v) for v in _alog_grouped.values())
+    if _total_assumptions:
         st.warning(
-            f"⚠ **This BOM was built from {len(_flat_assumptions)} assumed values "
+            f"⚠ **This BOM was built from {_total_assumptions} assumed values "
             f"— review and fine-tune for accuracy before quoting.** The numbers "
             f"below are a defensible first-pass estimate, not a contractual "
             f"figure. Adjust the inputs in the pillar expanders above and click "
             f"**🔁 Re-generate BOM** to refresh."
         )
-        with st.expander(
-            f"📋 Assumption details ({len(_flat_assumptions)} item"
-            f"{'s' if len(_flat_assumptions) != 1 else ''})",
-            expanded=True,
-        ):
-            for _label, _it in _flat_assumptions:
-                st.markdown(f"- **[{_label}]** {_it}")
+        # Group by pillar — each pillar's assumptions in its own
+        # collapsible sub-expander. Multi-pillar uploads otherwise
+        # produce a 20+ bullet flat list which is hard to scan.
+        # First pillar opens by default, others collapsed.
+        for _idx, (_pk, _items) in enumerate(_alog_grouped.items()):
+            _pillar_label = PILLAR_META.get(_pk, {}).get("label", _pk)
+            _icon = PILLAR_META.get(_pk, {}).get("icon", "📋")
+            with st.expander(
+                f"{_icon} {_pillar_label} — {len(_items)} assumption"
+                f"{'s' if len(_items) != 1 else ''}",
+                expanded=(_idx == 0),
+            ):
+                for _it in _items:
+                    st.markdown(f"- {_it}")
 
     # ----- Top-of-results summary: metrics + download CTAs -----
     # Surfaces totals + Excel / JSON downloads immediately under the
