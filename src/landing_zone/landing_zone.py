@@ -655,6 +655,7 @@ _LZ_FOUNDATION = {
     "public_ip", "firewall", "bastion", "nat_gateway",
     "log_analytics", "key_vault", "recovery_vault",
     "recovery_vault_instances", "bandwidth_egress",
+    "vpn_gw",  # mandatory in every preset — hybrid connectivity assumed
 }
 
 _LZ_STANDARD = _LZ_FOUNDATION | {
@@ -698,8 +699,14 @@ def build_landing_zone_bom(
     region: str,
     enabled_keys: List[str],
     quantity_overrides: Optional[dict] = None,
+    sku_overrides: Optional[dict] = None,
 ) -> List[BomLine]:
+    """Build LZ BOM. `sku_overrides` lets callers swap the meter pick
+    for SKU-driven components — currently used by `vpn_gw` (VpnGw1 /
+    VpnGw1AZ / VpnGw2AZ / VpnGw3AZ / etc.) but generalisable. Keyed by
+    `comp.key`; value is the SKU string."""
     overrides = quantity_overrides or {}
+    skus = sku_overrides or {}
     lines: List[BomLine] = []
     for comp in LANDING_ZONE_COMPONENTS:
         if comp.key not in enabled_keys:
@@ -710,8 +717,22 @@ def build_landing_zone_bom(
         # emit a $0 line for it.
         if qty <= 0:
             continue
-        records = client.query(comp.build_filter(region), max_pages=5)
-        chosen = (comp.pick(records) if comp.pick else _cheapest(records))
+        # SKU override path: for components where the user (or preset)
+        # picks a specific SKU tier, replace the component's default
+        # picker with one filtered by the chosen SKU label. Currently
+        # only `vpn_gw` uses this — the SKU comes from
+        # `sku_overrides["vpn_gw"]` and defaults to "VpnGw1AZ".
+        _sku_pick = skus.get(comp.key)
+        if comp.key == "vpn_gw" and _sku_pick:
+            _sku_lower = _sku_pick.lower()
+            local_pick = lambda recs: _cheapest([
+                r for r in recs if _sku_lower in r.meter_name.lower()
+            ]) or None
+            records = client.query(comp.build_filter(region), max_pages=5)
+            chosen = local_pick(records)
+        else:
+            records = client.query(comp.build_filter(region), max_pages=5)
+            chosen = (comp.pick(records) if comp.pick else _cheapest(records))
         # Layer-2 defense: if the picker landed on a $0 record (free-tier
         # meter that snuck through), treat it as "not found" so the static
         # fallback below kicks in. A real BOM line should never be $0.
@@ -724,6 +745,12 @@ def build_landing_zone_bom(
             # substitution so reviewers can verify against the live MS
             # pricing page.
             static = LZ_STATIC_RATES.get(comp.key)
+            # SKU-aware static fallback for `vpn_gw` — the default
+            # `vpn_gw` entry in LZ_STATIC_RATES is VpnGw1; swap to the
+            # SKU the user / preset chose.
+            if comp.key == "vpn_gw" and _sku_pick:
+                from ..pricing.lz_static import vpn_sku_to_static_rate
+                static = vpn_sku_to_static_rate(_sku_pick)
             if static:
                 monthly = static.per_unit_per_month_usd * qty
                 lines.append(

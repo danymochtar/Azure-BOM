@@ -961,6 +961,7 @@ if _btn_clicked or _should_auto_generate:
             "include_bcdr": ls_in.get("include_bcdr", False),
             "lz_selected": ls_in.get("lz_selected", []),
             "lz_preset": ls_in.get("lz_preset", "Standard"),
+            "vpn_gw_sku": ls_in.get("vpn_gw_sku"),
             "sec_enabled": sec_in.get("enabled", []),
             "backup_pct": ls_in.get("backup_pct", 40),
             "la_mb_per_vm_per_day": ls_in.get("la_mb_per_vm_per_day", 200),

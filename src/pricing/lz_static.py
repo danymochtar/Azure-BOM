@@ -99,11 +99,15 @@ LZ_STATIC_RATES: dict = {
         per_unit_per_month_usd=0.19,
         note="Basic tier; Standard / Premium step-ups.",
     ),
+    # VPN Gateway — kept for back-compat; the SKU-aware lookup below is
+    # what the builder uses when `vpn_gw_sku` is passed in
+    # `sku_overrides`. Default landing rate is VpnGw1 (non-AZ) for the
+    # "default install" line.
     "vpn_gw": StaticRate(
         label="VPN Gateway (VpnGw1)",
         unit="gateway-hour",
-        per_unit_per_month_usd=0.142,
-        note="VpnGw1 SKU; zone-redundant ~15% more.",
+        per_unit_per_month_usd=0.190,
+        note="VpnGw1 SKU; zone-redundant ~30% more.",
     ),
     "app_gateway_waf": StaticRate(
         label="Application Gateway WAF v2 (instance)",
@@ -228,3 +232,65 @@ LZ_STATIC_RATES: dict = {
         note="Premium tier; geo-replicas are additional line items.",
     ),
 }
+
+
+# ---------------------------------------------------------------------------
+# VPN Gateway — SKU ladder
+# ---------------------------------------------------------------------------
+# Generation-2 VPN Gateway SKUs by aggregate throughput / S2S tunnels / P2S
+# connections. AZ variants are zone-redundant deployments (~30% premium).
+# Static rates captured 2026-04 from
+# https://azure.microsoft.com/en-us/pricing/details/vpn-gateway/ .
+#
+# Sizing guide (MS Learn):
+#   Basic       100 Mbps  / 10 S2S   / 128 P2S    — legacy, no BGP/IKEv2
+#   VpnGw1      650 Mbps  / 30 S2S   / 250 P2S    — entry production
+#   VpnGw2      1   Gbps  / 30 S2S   / 500 P2S    — mid-tier
+#   VpnGw3      1.25 Gbps / 30 S2S   / 1000 P2S   — large hub
+#   VpnGw4      5   Gbps  / 100 S2S  / 5000 P2S   — enterprise
+#   VpnGw5      10  Gbps  / 100 S2S  / 10000 P2S  — top SKU
+VPN_GATEWAY_SKUS: dict = {
+    "Basic":     {"label": "VPN Gateway Basic",        "rate_usd_hr": 0.036, "throughput": "100 Mbps",  "s2s": 10,  "p2s": 128,  "az": False, "note": "Legacy. No BGP, no IKEv2, no ER coexistence. Not for production."},
+    "VpnGw1":    {"label": "VPN Gateway VpnGw1",       "rate_usd_hr": 0.190, "throughput": "650 Mbps",  "s2s": 30,  "p2s": 250,  "az": False, "note": "Entry production tier; BGP + IKEv2 + P2S OpenVPN."},
+    "VpnGw1AZ":  {"label": "VPN Gateway VpnGw1AZ",     "rate_usd_hr": 0.250, "throughput": "650 Mbps",  "s2s": 30,  "p2s": 250,  "az": True,  "note": "VpnGw1 with zone redundancy. Production default."},
+    "VpnGw2":    {"label": "VPN Gateway VpnGw2",       "rate_usd_hr": 0.500, "throughput": "1 Gbps",    "s2s": 30,  "p2s": 500,  "az": False, "note": "1 Gbps aggregate; mid-tier hub."},
+    "VpnGw2AZ":  {"label": "VPN Gateway VpnGw2AZ",     "rate_usd_hr": 0.650, "throughput": "1 Gbps",    "s2s": 30,  "p2s": 500,  "az": True,  "note": "VpnGw2 with zone redundancy."},
+    "VpnGw3":    {"label": "VPN Gateway VpnGw3",       "rate_usd_hr": 1.280, "throughput": "1.25 Gbps", "s2s": 30,  "p2s": 1000, "az": False, "note": "Large hub; co-existence with ExpressRoute."},
+    "VpnGw3AZ":  {"label": "VPN Gateway VpnGw3AZ",     "rate_usd_hr": 1.665, "throughput": "1.25 Gbps", "s2s": 30,  "p2s": 1000, "az": True,  "note": "VpnGw3 with zone redundancy. Enterprise hub default."},
+    "VpnGw4":    {"label": "VPN Gateway VpnGw4",       "rate_usd_hr": 3.370, "throughput": "5 Gbps",    "s2s": 100, "p2s": 5000, "az": False, "note": "5 Gbps, 100 S2S tunnels."},
+    "VpnGw4AZ":  {"label": "VPN Gateway VpnGw4AZ",     "rate_usd_hr": 4.380, "throughput": "5 Gbps",    "s2s": 100, "p2s": 5000, "az": True,  "note": "VpnGw4 with zone redundancy."},
+    "VpnGw5":    {"label": "VPN Gateway VpnGw5",       "rate_usd_hr": 5.760, "throughput": "10 Gbps",   "s2s": 100, "p2s": 10000,"az": False, "note": "Top SKU; 10 Gbps aggregate."},
+    "VpnGw5AZ":  {"label": "VPN Gateway VpnGw5AZ",     "rate_usd_hr": 7.490, "throughput": "10 Gbps",   "s2s": 100, "p2s": 10000,"az": True,  "note": "VpnGw5 with zone redundancy."},
+}
+
+
+def vpn_sku_to_static_rate(sku: str) -> StaticRate:
+    """Translate a VPN SKU string into a StaticRate row the builder can
+    feed into the BOM. Falls back to VpnGw1 when the SKU is unknown."""
+    spec = VPN_GATEWAY_SKUS.get(sku) or VPN_GATEWAY_SKUS["VpnGw1"]
+    return StaticRate(
+        label=spec["label"],
+        unit="gateway-hour",
+        per_unit_per_month_usd=spec["rate_usd_hr"],
+        note=(
+            f'{spec["throughput"]} aggregate; {spec["s2s"]} S2S tunnels; '
+            f'{spec["p2s"]} P2S connections. {spec["note"]}'
+        ),
+    )
+
+
+# Preset → recommended VPN SKU. CAF guidance + community sizing
+# heuristics: small hubs land on VpnGw1AZ (zone-redundant, BGP);
+# growing standard footprints upgrade to VpnGw2AZ as concurrent S2S
+# tunnels + P2S users grow; enterprise multi-region designs need
+# VpnGw3AZ for ExpressRoute coexistence on the same gateway.
+PRESET_VPN_SKU: dict = {
+    "Basic":      "VpnGw1",       # cheapest functional; no AZ
+    "Foundation": "VpnGw1AZ",     # zone-redundant prod baseline
+    "Standard":   "VpnGw2AZ",     # 1 Gbps, more S2S headroom
+    "Enterprise": "VpnGw3AZ",     # 1.25 Gbps + ER coexistence
+}
+
+
+def recommend_vpn_sku(preset: str = "Foundation") -> str:
+    return PRESET_VPN_SKU.get(preset, "VpnGw1AZ")

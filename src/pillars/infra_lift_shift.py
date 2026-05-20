@@ -392,6 +392,41 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
                     if on:
                         lz_selected.append(comp.key)
 
+            # ---- VPN Gateway SKU picker ----
+            # The single `vpn_gw` checkbox covers Generation-2 SKUs
+            # (VpnGw1 .. VpnGw5 + AZ variants) — let the user pick
+            # which tier. Preset drives the default: Basic → VpnGw1,
+            # Foundation → VpnGw1AZ, Standard → VpnGw2AZ, Enterprise
+            # → VpnGw3AZ. Throughput / S2S / P2S limits per SKU are
+            # documented in `lz_static.VPN_GATEWAY_SKUS`.
+            vpn_gw_sku = None
+            if "vpn_gw" in lz_selected:
+                from ..pricing.lz_static import VPN_GATEWAY_SKUS, recommend_vpn_sku
+                _vpn_keys = list(VPN_GATEWAY_SKUS.keys())
+                _vpn_default = recommend_vpn_sku(preset_choice)
+                _saved_vpn = prefs.get("vpn_gw_sku") or _vpn_default
+                _vpn_idx = _vpn_keys.index(_saved_vpn) if _saved_vpn in _vpn_keys else _vpn_keys.index(_vpn_default)
+                vpn_gw_sku = st.selectbox(
+                    f"VPN Gateway SKU (preset `{preset_choice}` recommends `{_vpn_default}`)",
+                    _vpn_keys,
+                    index=_vpn_idx,
+                    key="ls_vpn_gw_sku",
+                    format_func=lambda k: (
+                        f"{k} — {VPN_GATEWAY_SKUS[k]['throughput']} | "
+                        f"{VPN_GATEWAY_SKUS[k]['s2s']} S2S / "
+                        f"{VPN_GATEWAY_SKUS[k]['p2s']} P2S"
+                        + (" (zone-redundant)" if VPN_GATEWAY_SKUS[k]['az'] else "")
+                    ),
+                    help=(
+                        "Throughput drives SKU selection. Basic = legacy "
+                        "(no BGP / IKEv2 — not for prod). AZ = zone-"
+                        "redundant deployment, ~30% premium. VpnGw3+ "
+                        "required for ExpressRoute coexistence on the "
+                        "same gateway."
+                    ),
+                )
+                st.caption(VPN_GATEWAY_SKUS[vpn_gw_sku]["note"])
+
             # ---- Derived-quantity sliders / inputs ----
             # Each input is gated on its corresponding LZ component being
             # ticked above. Untie that and the input disappears — no point
@@ -486,6 +521,7 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
         "secondary_region": secondary_region,
         "lz_selected": lz_selected,
         "lz_preset": preset_choice if include_lz else prefs.get("lz_preset", "Standard"),
+        "vpn_gw_sku": vpn_gw_sku or prefs.get("vpn_gw_sku"),
         "backup_pct": backup_pct,
         "la_mb_per_vm_per_day": la_mb_per_vm_per_day,
         "bandwidth_gb": bandwidth_gb,
@@ -581,11 +617,19 @@ def build_bom(client, region: str, inputs: dict, app_name: str, pricing_mode: st
         auto_enabled = [k for k in auto_enabled if k != "site_recovery"]
 
     if inputs.get("include_lz") and auto_enabled:
+        # Preset-driven SKU recommendations — currently VPN Gateway
+        # (preset → VpnGw1 / VpnGw1AZ / VpnGw2AZ / VpnGw3AZ). User can
+        # override via the `vpn_gw_sku` widget in render_inputs which
+        # writes to `inputs["vpn_gw_sku"]`.
+        from ..pricing.lz_static import recommend_vpn_sku
+        _preset = inputs.get("lz_preset", "Foundation")
+        _vpn_sku = inputs.get("vpn_gw_sku") or recommend_vpn_sku(_preset)
         all_lines.extend(
             build_landing_zone_bom(
                 client=client, region=region,
                 enabled_keys=auto_enabled,
                 quantity_overrides=lz_overrides,
+                sku_overrides={"vpn_gw": _vpn_sku},
             )
         )
 
