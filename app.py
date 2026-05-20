@@ -366,7 +366,7 @@ pasted_image = None
 try:
     from streamlit_paste_button import paste_image_button
     _paste_result = paste_image_button(
-        label="📋 Submit screenshot from clipboard",
+        label="📋 Paste image",
         key="paste_img_btn",
         errors="ignore",
     )
@@ -379,32 +379,53 @@ except ImportError:
         "the file uploader above instead."
     )
 
-# --- Merge all three input sources into one `uploads` stream ---
-uploads: list = []
-for f in uploaded_files:
-    fb = f.read()
-    uploads.append({"name": f.name, "bytes": fb})
+# --- Submit gate ---
+# Nothing downstream runs until the user clicks Submit. This prevents
+# the classifier (Haiku) and auto-simulate (Sonnet) from firing on
+# every page load / widget interaction — both are paid API calls and
+# we'd rather burn tokens deliberately on a "yes process this" click
+# than as a side-effect of pasting text into a textarea.
+_submit_clicked = st.button("Submit", type="primary", key="submit_inputs")
 
-if (pasted_text or "").strip():
-    import time as _time
-    _name = f"pasted-content-{int(_time.time())}.txt"
-    uploads.append({"name": _name, "bytes": pasted_text.encode("utf-8")})
+if _submit_clicked:
+    new_uploads: list = []
+    for f in uploaded_files:
+        new_uploads.append({"name": f.name, "bytes": f.read()})
+    if (pasted_text or "").strip():
+        import time as _time
+        new_uploads.append({
+            "name": f"pasted-content-{int(_time.time())}.txt",
+            "bytes": pasted_text.encode("utf-8"),
+        })
+    if pasted_image is not None:
+        import io as _io
+        import time as _time
+        _buf = _io.BytesIO()
+        pasted_image.save(_buf, format="PNG")
+        new_uploads.append({
+            "name": f"pasted-screenshot-{int(_time.time())}.png",
+            "bytes": _buf.getvalue(),
+        })
+    if new_uploads:
+        st.session_state["_submitted_uploads"] = new_uploads
+        # New file set → drop any stale auto-generate guard so the
+        # fresh inputs re-fire Generate.
+        for k in list(st.session_state):
+            if k.startswith("_auto_gen::"):
+                st.session_state.pop(k, None)
+        st.rerun()
 
-if pasted_image is not None:
-    import io as _io
-    import time as _time
-    _buf = _io.BytesIO()
-    pasted_image.save(_buf, format="PNG")
-    uploads.append({
-        "name": f"pasted-screenshot-{int(_time.time())}.png",
-        "bytes": _buf.getvalue(),
-    })
-
+# Pick uploads from session_state — only present after a successful
+# Submit click. Widget interactions (slider, dropdown, etc.) don't
+# clear this, so the user can tweak inputs and re-Generate without
+# re-uploading.
+uploads: list = st.session_state.get("_submitted_uploads", []) or []
 if not uploads:
     st.info(
-        "Add at least one source above to get started — upload a file, "
-        "paste some content, or paste a screenshot. Multi-source input is "
-        "supported (e.g. an RVTools file + a customer email)."
+        "Add at least one source above (file upload / pasted text / "
+        "pasted screenshot), then click **Submit** to begin processing. "
+        "Multi-source input is supported — combine an RVTools file with "
+        "a pasted customer email to fill gaps."
     )
     st.stop()
 
