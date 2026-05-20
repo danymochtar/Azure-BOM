@@ -569,6 +569,16 @@ for pk in active_pillars:
             if sim_cache_key in st.session_state:
                 sim = st.session_state[sim_cache_key]
             else:
+                # Throttle multi-pillar auto-simulate so we don't burst-
+                # fire the 30K input-tokens-per-minute Tier-1 rate limit
+                # when the user has 3+ pillars active. Sleep 2s between
+                # back-to-back live API calls (cache hits skip the sleep).
+                import time as _time
+                _last_sim_call = st.session_state.get("_last_sim_call_ts", 0)
+                _elapsed = _time.monotonic() - _last_sim_call
+                if _last_sim_call and _elapsed < 2.0:
+                    _time.sleep(2.0 - _elapsed)
+
                 try:
                     with st.spinner(f"Auto-simulating inputs for {md['label']}…"):
                         sim = auto_simulate(
@@ -579,11 +589,30 @@ for pk in active_pillars:
                             prior_answers=prior_answers,
                         )
                     st.session_state[sim_cache_key] = sim
+                    st.session_state["_last_sim_call_ts"] = _time.monotonic()
                 except Exception as e:
-                    st.warning(
-                        f"Auto-simulate failed for {md['label']} "
-                        f"({type(e).__name__}: {e}). Falling back to defaults."
-                    )
+                    # Friendlier message for the two most common failures.
+                    err_kind = type(e).__name__
+                    if err_kind == "RateLimitError":
+                        st.warning(
+                            f"⏱ Auto-simulate for **{md['label']}** hit the "
+                            "Anthropic input-tokens-per-minute rate limit even "
+                            "after a 60s retry. Falling back to defaults — try "
+                            "re-running with fewer pillars ticked, or upgrade "
+                            "the API tier at console.anthropic.com/settings/limits."
+                        )
+                    elif err_kind == "BadRequestError" and "prompt is too long" in str(e):
+                        st.warning(
+                            f"📄 Auto-simulate for **{md['label']}** couldn't fit "
+                            "the upload into the model's context window. Falling "
+                            "back to defaults — try uploading a smaller summary "
+                            "doc instead of the full inventory."
+                        )
+                    else:
+                        st.warning(
+                            f"Auto-simulate failed for {md['label']} "
+                            f"({err_kind}: {e}). Falling back to defaults."
+                        )
                     with st.expander("Traceback", expanded=False):
                         st.code(traceback.format_exc())
                     sim = None

@@ -34,18 +34,22 @@ from .ai_application import AZURE_FOUNDRY_MODELS, AZURE_OPENAI_MODELS, COGNITIVE
 MODEL = "claude-sonnet-4-6"
 
 # Auto-simulate doesn't need every row of an RVTools-sized export — it only
-# needs to understand the SHAPE of the workload (counts, sample rows,
-# headers, narrative). Cap the spreadsheet preview at this many rows per
-# sheet so the prompt stays well under the 1M-token model limit.
-# Full-fidelity VM extraction happens in `ai_inventory.py`, not here.
-AUTO_SIM_SPREADSHEET_ROWS = 200
+# needs to understand the SHAPE of the workload (sheet names, headers, row
+# counts, a handful of sample rows). 20 rows is plenty to recognize the
+# pattern of an inventory file; the per-pillar Sonnet call then uses the
+# headers + counts + narrative content to infer sizing.
+#
+# Setting this low matters for Tier-1 API users where the input-tokens-per-
+# minute cap is 30K — at 200 rows × ~10 cols × ~50 chars/cell each call
+# burns ~25K input tokens, so 2-3 pillar calls in quick succession trip
+# the 30K ITPM limit even when no single call exceeds the context window.
+AUTO_SIM_SPREADSHEET_ROWS = 20
 
 # Safety cap on the total character count of text content blocks fed to
-# the model. A char-to-token ratio of ~3.5 means 700K chars ≈ 200K tokens,
-# leaving room for the system prompt, schema, response, and any binary
-# (PDF/image) content blocks. Truncated content gets a clear marker so
-# the model knows what's missing.
-AUTO_SIM_TEXT_CHAR_BUDGET = 700_000
+# the model. ~200K chars ≈ 50K tokens — well under the per-minute rate
+# limit even when 3 pillar calls fire in sequence. Truncated content
+# gets a clear marker so the model knows what's missing.
+AUTO_SIM_TEXT_CHAR_BUDGET = 200_000
 
 
 PILLAR_SCHEMAS: Dict[str, str] = {
@@ -293,16 +297,28 @@ def simulate(
     ]
 
     client = anthropic.Anthropic(api_key=api_key, max_retries=4)
-    try:
-        response = client.messages.parse(
+
+    def _call(blocks):
+        return client.messages.parse(
             model=MODEL,
             max_tokens=8000,
             system=[
                 {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
             ],
-            messages=[{"role": "user", "content": user_content}],
+            messages=[{"role": "user", "content": blocks}],
             output_format=PillarSimulation,
         )
+
+    try:
+        response = _call(user_content)
+    except anthropic.RateLimitError:
+        # Tier-1 API caps at 30K input tokens / minute. Multi-pillar
+        # auto-simulate can burn through that. Wait one full minute (the
+        # rolling window) and retry once. If it still fails, propagate
+        # so the caller falls back to defaults with a clear message.
+        import time as _time
+        _time.sleep(60)
+        response = _call(user_content)
     except anthropic.BadRequestError as e:
         # Second-pass shrink: if the binary content blocks (PDF/image) +
         # already-truncated text still exceed the model's context window,
