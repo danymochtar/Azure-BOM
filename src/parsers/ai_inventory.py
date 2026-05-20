@@ -281,11 +281,24 @@ def ai_extract_direct(
     # Caller's preferred model first; fall back to Opus on overload.
     from ..llm import call_with_cascade
     cascade = (model,) if model == "claude-opus-4-7" else (model, "claude-opus-4-7")
-    response = call_with_cascade(
-        process_label="Inventory extraction (direct)",
-        cascade=cascade,
-        invoke=_invoke,
-    )
+
+    def _run():
+        return call_with_cascade(
+            process_label="Inventory extraction (direct)",
+            cascade=cascade,
+            invoke=_invoke,
+        )
+
+    try:
+        response = _run()
+    except anthropic.RateLimitError:
+        # Tier-1 API caps at 30K input tokens / minute. A full RVTools
+        # extraction easily lands above that on its own. Wait one full
+        # rolling-minute window and retry once. If still rate-limited,
+        # propagate so the caller can fall back to the heuristic parser.
+        import time as _time
+        _time.sleep(60)
+        response = _run()
     return response.parsed_output
 
 

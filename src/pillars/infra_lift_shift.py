@@ -221,23 +221,60 @@ def render_inputs(st, prefs: dict, app_name: str, region: str,
                         f"✅ `{un}` — extracted {len(f_items)} VM(s) · mode `{f_mode}`"
                     )
                 except Exception as e:
-                    per_file_status.append(
-                        f"⚠️ `{un}` — AI extraction failed ({type(e).__name__}: {e})"
-                    )
+                    # Friendly summary — never dump the full Anthropic
+                    # error body (URLs, IDs, multi-line wrapping). The
+                    # heuristic recovery below quietly covers the
+                    # common rate-limit / overload cases.
+                    _err_kind = type(e).__name__
+                    if _err_kind == "RateLimitError":
+                        _short = (
+                            "rate-limited by Anthropic API (Tier-1 30K "
+                            "input-tokens/min cap). Heuristic parser "
+                            "running as fallback — re-Submit later for "
+                            "an AI-driven re-extraction."
+                        )
+                    elif _err_kind == "OverloadedError":
+                        _short = (
+                            "Anthropic model temporarily overloaded "
+                            "(529). Heuristic parser running as "
+                            "fallback — re-Submit in a minute for an "
+                            "AI re-extraction."
+                        )
+                    elif _err_kind == "BadRequestError" and "prompt is too long" in str(e):
+                        _short = (
+                            "file too large for the AI extractor's "
+                            "context window. Heuristic parser running "
+                            "as fallback."
+                        )
+                    else:
+                        _short = f"{_err_kind}"
                     f_items, f_mode, f_spec = [], "failed", None
+                    _recovered = False
                     if kind_from_name(un) == "spreadsheet":
                         try:
                             f_items, _ = parse_inventory(
                                 ub, un, include_powered_off=include_off,
                             )
                             f_mode = "heuristic"
-                            per_file_status.append(
-                                f"↪ `{un}` — heuristic parser recovered {len(f_items)} item(s)"
-                            )
+                            _recovered = True
                         except Exception as e2:
                             per_file_status.append(
-                                f"❌ `{un}` — heuristic parser failed ({e2})"
+                                f"❌ `{un}` — both AI ({_err_kind}) and "
+                                f"heuristic parsers failed ({e2})."
                             )
+                    if _recovered:
+                        # Quiet success — heuristic worked, no need to
+                        # bury the user in red. Single info line.
+                        per_file_status.append(
+                            f"ℹ `{un}` — {_short} Heuristic recovered "
+                            f"{len(f_items)} item(s)."
+                        )
+                    elif _err_kind not in ("RateLimitError", "OverloadedError"):
+                        # Genuine failure (not just a transient
+                        # rate-limit) — surface it.
+                        per_file_status.append(
+                            f"⚠️ `{un}` — AI extraction failed ({_short})."
+                        )
 
             # Dedup: concatenate items by name, skipping repeats so two uploads
             # of the same inventory don't double-count.
